@@ -4,4 +4,4 @@ Grupo 3 capstone
 +Nicole Moreno
 +Matías Muñoz 
 +Martin Riquelme 
-Alonso Sánchez 
++Alonso Sánchez 
