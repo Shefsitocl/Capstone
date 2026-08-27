@@ -24,7 +24,7 @@ Alonso Sánchez
 ### Definición del desafío
 **Desafío 07 – Salud Pública:** reducción de la inasistencia a citas médicas (*No Show*) en el sistema de atención primaria.
 
-- **Cliente:** Municipalidad de Providencia / CESFAM de Providencia.
+- **Cliente:** CESFAM de Providencia.
 - **Problema:** un porcentaje relevante de pacientes no asiste a sus horas médicas agendadas, lo que genera pérdida de recursos, listas de espera más largas y menor acceso a atención para otros pacientes.
 - **Objetivo:** diseñar e implementar una solución (tecnológica y/o de proceso) que disminuya la tasa de inasistencia a citas médicas en el CESFAM, mediante recordatorios, confirmación de horas u otros mecanismos.
 
