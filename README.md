@@ -19,7 +19,7 @@ Alonso Sánchez
 2. Comunicación oficial del equipo a través de un canal definido (WhatsApp) para temas rápidos.
 3. Avisar con al menos 24 horas de anticipación si no se puede cumplir un compromiso o asistir a una reunión.
 4. Las decisiones importantes del proyecto se toman por consenso; si no hay acuerdo, se vota por mayoría.
-5. Revisión cruzada (peer review) antes de entregar cualquier avance al profesor guía.
+5. Revisión cruzada antes de entregar cualquier avance al profesor guía.
 
 ### Definición del desafío
 **Desafío 07 – Salud Pública:** reducción de la inasistencia a citas médicas (*No Show*) en el sistema de atención primaria.
