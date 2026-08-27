@@ -1,11 +1,11 @@
 # Capstone
 ## Grupo 3
 ### Integrantes
-+Lucas Calquin
-+Nicole Moreno
-+Matías Muñoz
-+Martin Riquelme
-+Alonso Sánchez
+Lucas Calquin
+Nicole Moreno
+Matías Muñoz
+Martin Riquelme
+Alonso Sánchez
 
 ### Valores del equipo
 - **Compromiso:** cumplir con los plazos y tareas acordadas, avisando a tiempo si surge algún impedimento.
