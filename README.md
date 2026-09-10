@@ -32,7 +32,7 @@ Alonso Sánchez
 > Cada integrante debe completar su compromiso siguiendo el formato SMART (Específico, Medible, Alcanzable, Relevante, con Tiempo definido).
 
 - **Lucas Calquin:** Encargarse de la parte técnica/desarrollo del proyecto, cumpliendo con las tareas de programación asignadas en cada etapa y avisando a tiempo si necesita ayuda.
-- **Nicole Moreno:** Ser el contacto principal con el cliente (CESFAM de Providencia), coordinando al menos una reunión al mes para ir revisando que el proyecto vaya por buen camino.
+- **Nicole Moreno:** Ser el contacto principal con el cliente (CESFAM de Providencia), coordinando para ir revisando que el proyecto vaya por buen camino.
 - **Matías Muñoz:** Encargarse de que la solución se vea bien y sea fácil de usar, mostrando avances de diseño al equipo antes de cada entrega.
 - **Martin Riquelme:** Investigar información y datos que sirvan para entender mejor el problema, compartiéndolos con el equipo antes de cada reunión importante.
 - **Alonso Sánchez:** Encargarse de organizar al equipo (tareas, plazos, reuniones), avisando con anticipación si algo se está atrasando.
