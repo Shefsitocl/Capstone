@@ -1,11 +1,11 @@
 # Capstone
 ## Grupo 3 - Contrato de equipo
 ### Integrantes
-Lucas Calquin,
-Nicole Moreno,
+Alonso Sánchez,
+Lucas Calquín,
+Martin Riquelme, 
 Matías Muñoz,
-Martin Riquelme,
-Alonso Sánchez
+Nicole Moreno
 
 <img src="./img/integrantes_foto.png" alt="Diagrama de arquitectura" width="600">
 
