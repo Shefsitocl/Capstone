@@ -1,5 +1,5 @@
 # Capstone
-## Grupo 3
+## Grupo 3 - Contrato de equipo
 ### Integrantes
 Lucas Calquin,
 Nicole Moreno,
@@ -31,7 +31,6 @@ Alonso Sánchez
 - **Objetivo:** diseñar e implementar una solución (tecnológica y/o de proceso) que disminuya la tasa de inasistencia a citas médicas en el CESFAM, mediante recordatorios, confirmación de horas u otros mecanismos.
 
 ### Declaración de compromisos SMART por persona
-> Cada integrante debe completar su compromiso siguiendo el formato SMART (Específico, Medible, Alcanzable, Relevante, con Tiempo definido).
 
 - **Lucas Calquin:** Encargarse de la parte técnica/desarrollo del proyecto, cumpliendo con las tareas de programación asignadas en cada etapa y avisando a tiempo si necesita ayuda.
 - **Nicole Moreno:** Ser el contacto principal con el cliente (CESFAM de Providencia), coordinando para ir revisando que el proyecto vaya por buen camino.
