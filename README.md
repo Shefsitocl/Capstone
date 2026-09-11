@@ -7,7 +7,7 @@ Matías Muñoz,
 Martin Riquelme,
 Alonso Sánchez
 
-<img src="./img/integrantes_foto.png" alt="Diagrama de arquitectura" width="700">
+<img src="./img/integrantes_foto.png" alt="Diagrama de arquitectura" width="600">
 
 ### Valores del equipo
 - **Compromiso:** cumplir con los plazos y tareas acordadas, avisando a tiempo si surge algún impedimento.
