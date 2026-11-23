@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model StaffUser {
+  id          Int       @id @default(autoincrement())
+  email       String    @unique
+  password    String
+  fullName    String    @map("full_name")
+  rut         String    @unique
+  role        String
+  unit        String
+  active      Boolean   @default(true)
+  lastLoginAt DateTime? @default(now()) @map("last_login_at")
+
+  @@map("staff_users")
+}
+
+model Patient {
+  id                Int             @id @default(autoincrement())
+  rut               String          @unique
+  rayenFicha        String          @unique @map("rayen_ficha")
+  fullName          String          @map("full_name")
+  age               Int
+  gender            String
+  phone             String
+  sector            String
+  distanceKm        Float           @map("distance_km")
+  fonasaTramo       String          @map("fonasa_tramo")
+  preferentialLaw   Boolean         @default(false) @map("preferential_law")
+  chronicProgram    String?         @map("chronic_program")
+  totalAppointments Int             @default(0) @map("total_appointments")
+  nspHistoryCount   Int             @default(0) @map("nsp_history_count")
+  appointments      Appointment[]
+  waitlistEntries   Waitlist[]
+  communications    Communication[]
+
+  @@map("patients")
+}
+
+model Appointment {
+  id               String    @id
+  patientId        Int       @map("patient_id")
+  patient          Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  specialty        String
+  professionalName String    @map("professional_name")
+  boxNumber        String    @map("box_number")
+  dayLabel         String    @map("day_label")
+  scheduledTime    String    @map("scheduled_time")
+  status           String
+  channel          String
+  riskScore        Int       @default(20) @map("risk_score")
+  riskReasons      String[]  @default([]) @map("risk_reasons")
+  checkinSource    String?   @map("checkin_source")
+  checkinAt        DateTime? @map("checkin_at")
+  checkinLatencyMs Int?      @map("checkin_latency_ms")
+
+  @@map("appointments")
+}
+
+model Waitlist {
+  id                    Int     @id @default(autoincrement())
+  patientId             Int     @map("patient_id")
+  patient               Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  specialty             String
+  priorityScore         Int     @map("priority_score")
+  clinicalNote          String  @map("clinical_note")
+  preferredShift        String  @map("preferred_shift")
+  status                String  @default("Disponible")
+  assignedAppointmentId String? @map("assigned_appointment_id")
+
+  @@map("waitlist")
+}
+
+model MlPredictionLog {
+  id             Int      @id @default(autoincrement())
+  appointmentId  String   @map("appointment_id")
+  patientRut     String   @map("patient_rut")
+  probabilityNsp Float    @map("probability_nsp")
+  riskScore      Int      @map("risk_score")
+  riskLevel      String   @map("risk_level")
+  modelVersion   String   @default("XGBoost-APS-v1.3") @map("model_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("ml_prediction_logs")
+}
+
+model Communication {
+  id                 Int     @id @default(autoincrement())
+  appointmentId      String? @map("appointment_id")
+  patientId          Int     @map("patient_id")
+  patient            Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  channel            String
+  timeLabel          String  @map("time_label")
+  intent             String
+  transcript         String
+  rootCause          String? @map("root_cause")
+  vulnerabilityAlert Boolean @default(false) @map("vulnerability_alert")
+  reviewStatus       String  @default("Pendiente") @map("review_status")
+
+  @@map("communications")
+}
+
+model IotTotemEvent {
+  id              Int      @id @default(autoincrement())
+  deviceId        String   @map("device_id")
+  hardwareType    String   @map("hardware_type")
+  qrRawPayload    String   @map("qr_raw_payload")
+  rutExtracted    String   @map("rut_extracted")
+  patientName     String   @map("patient_name")
+  appointmentId   String?  @map("appointment_id")
+  latencyMs       Int      @map("latency_ms")
+  offlineBuffered Boolean  @default(false) @map("offline_buffered")
+  status          String   @default("VALIDADO")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("iot_totem_events")
+}
+
+model ConnectorConfig {
+  id          String   @id
+  name        String
+  scope       String
+  endpointUrl String   @default("") @map("endpoint_url")
+  authToken   String   @default("") @map("auth_token")
+  status      String   @default("Sin configurar")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("connector_configs")
+}
