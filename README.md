@@ -23,6 +23,12 @@
 
 ---
 
+## ¿Por qué Kura?
+
+> En mapudungun, ***kura*** significa **«piedra»**. Elegimos este nombre porque simboliza solidez, permanencia y confianza en la Atención Primaria de Salud: una base firme que evita la pérdida de horas odontológicas, acerca la tecnología con identidad local a los usuarios del **CESFAM de Providencia** y resguarda la continuidad de su cuidado clínico.
+
+---
+
 ## Definición del Desafío
 
 **Desafío 07 – Salud Pública:** Reducción de la inasistencia a citas médicas (*No Show* / NSP) en el sistema de atención primaria de salud (APS).
