@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Kura \u00b7 Gesti\u00f3n Predictiva, Omnicanal y Check-In IoT para CESFAM",
+  "description": "Kura · Gestión Predictiva, Omnicanal y Check-In IoT para CESFAM",
   "scripts": {
     "dev": "concurrently -n API,WEB -c cyan,green \"tsx watch server/index.ts\" \"vite\"",
     "dev:api": "tsx watch server/index.ts",
@@ -19,6 +19,7 @@
     "@prisma/client": "^6.4.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.475.0",
     "pg": "^8.13.1",
     "react": "^19.0.0",

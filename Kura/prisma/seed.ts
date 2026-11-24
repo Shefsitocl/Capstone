@@ -10,7 +10,7 @@ const staffData = [
   { email: "some@cesfam.cl", password: "cesfam2026", fullName: "Camila Valdés Rojas", rut: "17.845.210-3", role: "ADMINISTRACIÓN SOME", unit: "Ventanilla Central SOME · Providencia" },
   { email: "odontologia@cesfam.cl", password: "cesfam2026", fullName: "Dr. Sebastián Garay P.", rut: "15.290.441-8", role: "ODONTOLOGÍA / BOX", unit: "Unidad Dental · Box 3 y 4" },
   { email: "coordinacion@cesfam.cl", password: "cesfam2026", fullName: "Dra. Paulina Contreras M.", rut: "13.904.112-K", role: "COORDINACIÓN CLÍNICA", unit: "Dirección Técnica APS" },
-  { email: "iot@cesfam.cl", password: "cesfam2026", fullName: "Matías Muñoz · Soporte TI - Infraestructura Digital & ESP32", rut: "19.412.670-5", role: "SOPORTE IOT / TÓTEM", unit: "Infraestructura Digital & ESP32" },
+  { email: "matias.munoz@cesfam.cl", password: "cesfam2026", fullName: "Matías Muñoz · Soporte TI - Infraestructura Digital & ESP32", rut: "19.412.670-5", role: "SOPORTE IOT / TÓTEM", unit: "Infraestructura Digital & ESP32" },
   { email: "martin.riquelme@cesfam.cl", password: "cesfam2026", fullName: "Martín Riquelme- Soporte IoT & Telemetría ESP32", rut: "20.145.890-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Telemetría ESP32" },
   { email: "alonso.sanchez@cesfam.cl", password: "cesfam2026", fullName: "Alonso Sánchez - Soporte IoT & Redes CESFAM", rut: "20.489.312-8", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Redes CESFAM" },
   { email: "nicole.moreno@cesfam.cl", password: "cesfam2026", fullName: "Nicole Moreno - Soporte Tótem SOME & Acreditación", rut: "20.763.419-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte Tótem SOME & Acreditación" },

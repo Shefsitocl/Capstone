@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import jsQR from "jsqr";
 
 export interface ParsedChileanId {
   rut: string;
@@ -74,8 +75,10 @@ export function parseChileanIdQr(rawQrText: string): ParsedChileanId | null {
 }
 
 export function WebcamQrFallback({ onScanSuccess, onClose }: WebcamQrFallbackProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hintMsg, setHintMsg] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
@@ -85,16 +88,11 @@ export function WebcamQrFallback({ onScanSuccess, onClose }: WebcamQrFallbackPro
 
     async function startCamera() {
       try {
-        if (!("BarcodeDetector" in window)) {
-          setError("Este navegador no soporta lectura nativa de QR. Abre Kura en Chrome o Edge.");
-          return;
-        }
-
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
           },
         });
 
@@ -104,27 +102,38 @@ export function WebcamQrFallback({ onScanSuccess, onClose }: WebcamQrFallbackPro
         await videoRef.current.play();
         setScanning(true);
 
-        // @ts-expect-error BarcodeDetector es API nativa en navegadores Chromium
-        const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+        intervalId = window.setInterval(() => {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!video || !canvas || video.readyState < 2) return;
 
-        intervalId = window.setInterval(async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
-          try {
-            const barcodes = await detector.detect(videoRef.current);
-            for (const barcode of barcodes) {
-              const parsed = parseChileanIdQr(barcode.rawValue);
-              if (parsed) {
-                if (intervalId) clearInterval(intervalId);
-                onScanSuccess(parsed);
-                break;
-              }
+          const width = video.videoWidth;
+          const height = video.videoHeight;
+          if (!width || !height) return;
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) return;
+
+          ctx.drawImage(video, 0, 0, width, height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: "attemptBoth",
+          });
+
+          if (code && code.data) {
+            const parsed = parseChileanIdQr(code.data);
+            if (parsed) {
+              if (intervalId) clearInterval(intervalId);
+              onScanSuccess(parsed);
+            } else {
+              setHintMsg("Se detectó un QR, pero no corresponde a una cédula chilena válida.");
             }
-          } catch {
-            // Ignora fotogramas desenfocados
           }
-        }, 300);
+        }, 250);
       } catch {
-        setError("No se pudo encender la cámara. Verifica los permisos en la barra de direcciones.");
+        setError("No se pudo encender la cámara. Verifica los permisos del navegador.");
       }
     }
 
@@ -168,14 +177,19 @@ export function WebcamQrFallback({ onScanSuccess, onClose }: WebcamQrFallbackPro
       ) : (
         <div className="relative overflow-hidden rounded-lg bg-slate-900">
           <video ref={videoRef} className="h-60 w-full object-cover" muted playsInline />
+          <canvas ref={canvasRef} className="hidden" />
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="h-36 w-36 rounded-xl border-2 border-teal-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)]" />
           </div>
         </div>
       )}
 
+      {hintMsg && (
+        <p className="mt-2 text-xs font-medium text-amber-700">{hintMsg}</p>
+      )}
+
       <p className="mt-2 text-xs text-slate-500">
-        Acerca el QR del reverso de tu cédula de identidad al recuadro (a unos 12–15 cm de la lente).
+        Acerca el QR del reverso de tu cédula de identidad al recuadro (evitando reflejos de luz sobre el plástico).
       </p>
     </div>
   );
