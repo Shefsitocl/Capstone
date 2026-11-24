@@ -1,5 +1,6 @@
 // src/pages/PortalPage.tsx
-import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { WebcamQrFallback } from "../components/WebcamQrFallback";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Activity, AlertTriangle, ArrowUpRight, Bot, CalendarDays, Camera, CheckCircle2,
@@ -37,14 +38,12 @@ const SPECIALTY_BLOCK_MINUTES: Record<string, number> = {
 function getWeeklyDays(): { value: string; label: string }[] {
   const base = new Date();
   const list: { value: string; label: string }[] = [];
-
   for (let i = 0; i < 7; i++) {
     const d = new Date(base);
     d.setDate(base.getDate() + i);
     const dayName = DIAS_SEMANA[d.getDay()];
     const dd = String(d.getDate()).padStart(2, "0");
     const mm = String(d.getMonth() + 1).padStart(2, "0");
-
     if (i === 0) {
       list.push({ value: "Hoy", label: `Hoy (${dayName} ${dd}/${mm})` });
     } else if (i === 1) {
@@ -61,14 +60,12 @@ function getBlocksForSpecialty(specialty: string): { value: string; label: strin
   const blocks: { value: string; label: string; duration: number }[] = [];
   const startMin = 8 * 60; // 08:00
   const endMin = 17 * 60;  // 17:00
-
   for (let m = startMin; m + duration <= endMin; m += duration) {
     const h1 = String(Math.floor(m / 60)).padStart(2, "0");
     const min1 = String(m % 60).padStart(2, "0");
     const end = m + duration;
     const h2 = String(Math.floor(end / 60)).padStart(2, "0");
     const min2 = String(end % 60).padStart(2, "0");
-
     const range = `${h1}:${min1} - ${h2}:${min2}`;
     blocks.push({
       value: range,
@@ -579,7 +576,6 @@ function Appointments({
   notify: (m: string) => void;
 }) {
   const weeklyDays = getWeeklyDays();
-
   const [showAddForm, setShowAddForm] = useState(false);
   const [fullName, setFullName] = useState("");
   const [rut, setRut] = useState("");
@@ -601,11 +597,10 @@ function Appointments({
   const currentDuration = SPECIALTY_BLOCK_MINUTES[specialty] ?? 30;
   const cancelledAppt = appointments.find((a) => a.status === "Cancelada");
 
-const handleSpecialtyChange = (nextSpecialty: string) => {
+  const handleSpecialtyChange = (nextSpecialty: string) => {
     setSpecialty(nextSpecialty);
     const nextBlocks = getBlocksForSpecialty(nextSpecialty);
     setScheduledTime(nextBlocks[0]?.value || "08:00 - 08:30");
-
     if (
       nextSpecialty.includes("Cirugía") ||
       nextSpecialty.includes("Endodoncia") ||
@@ -729,7 +724,7 @@ const handleSpecialtyChange = (nextSpecialty: string) => {
                   <input type="number" min={0} max={99} className="control" value={nspCount} onChange={(e) => setNspCount(e.target.value)} title="Inasistencias previas" />
                 </div>
               </div>
-<div className="field">
+              <div className="field">
                 <label>Especialidad Odontológica (Bloque: {currentDuration} min)</label>
                 <select
                   className="control"
@@ -1335,9 +1330,8 @@ function Kiosk({
     ms?: number;
   } | null>(null);
   const [sending, setSending] = useState(false);
-  const [cameraActive, setCameraActive] = useState(false);
-  const [cameraMsg, setCameraMsg] = useState("");
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [showWebcamFallback, setShowWebcamFallback] = useState(false);
+
   const realPatientToday = appointments.find((a) => a.dayLabel === "Hoy" && a.patient.isRealUserAdded);
 
   const executeScan = useCallback(async (payloadToSend: string) => {
@@ -1388,54 +1382,6 @@ function Kiosk({
     }
   }, [notify, onRefresh]);
 
-  useEffect(() => {
-    if (!cameraActive) return;
-    let stream: MediaStream | null = null;
-    let timer: number | null = null;
-    const startCamera = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        const BarcodeDetectorCtor = (window as unknown as {
-          BarcodeDetector?: new (opts: { formats: string[] }) => {
-            detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue: string }>>;
-          };
-        }).BarcodeDetector;
-        if (!BarcodeDetectorCtor) {
-          setCameraMsg("Cámara activa, pero tu navegador no soporta lectura automática QR. Pega el texto QR o usa el ESP32-CAM.");
-          return;
-        }
-        const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
-        timer = window.setInterval(async () => {
-          if (videoRef.current && videoRef.current.readyState === 4) {
-            try {
-              const codes = await detector.detect(videoRef.current);
-              if (codes.length > 0 && codes[0].rawValue) {
-                const raw = codes[0].rawValue;
-                setQrInput(raw);
-                setCameraActive(false);
-                await executeScan(raw);
-              }
-            } catch {
-              // ignore frame read error
-            }
-          }
-        }, 450);
-      } catch {
-        setCameraMsg("No se detectó cámara disponible en este equipo. Puedes pegar la cadena QR de tu cédula abajo.");
-        setCameraActive(false);
-      }
-    };
-    startCamera();
-    return () => {
-      if (timer) window.clearInterval(timer);
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-    };
-  }, [cameraActive, executeScan]);
-
   return (
     <>
       <div className="banner">
@@ -1456,29 +1402,27 @@ function Kiosk({
               <button
                 type="button"
                 className="button tiny"
-                onClick={() => {
-                  setCameraMsg("");
-                  setCameraActive(!cameraActive);
-                }}
+                onClick={() => setShowWebcamFallback((prev) => !prev)}
               >
-                <Camera size={13} /> {cameraActive ? "Cerrar Cámara" : "Escanear con Cámara"}
+                <Camera size={13} /> {showWebcamFallback ? "Cerrar Cámara" : "Escanear con Cámara"}
               </button>
               <Badge>Conectado</Badge>
             </div>
           </div>
-          {cameraActive && (
-            <div style={{ marginBottom: 12, borderRadius: 8, overflow: "hidden", border: "1px solid #CBD5E1", background: "#0F172A" }}>
-              <video ref={videoRef} style={{ width: "100%", maxHeight: 220, objectFit: "cover", display: "block" }} muted playsInline />
-              <div style={{ padding: "6px 10px", fontSize: 11, color: "#E2E8F0" }}>
-                Acerca el código QR del reverso de tu cédula de identidad chilena frente a la cámara...
-              </div>
+
+          {showWebcamFallback && (
+            <div style={{ marginBottom: 14 }}>
+              <WebcamQrFallback
+                onClose={() => setShowWebcamFallback(false)}
+                onScanSuccess={async (scanned) => {
+                  setShowWebcamFallback(false);
+                  setQrInput(scanned.rawText);
+                  await executeScan(scanned.rawText);
+                }}
+              />
             </div>
           )}
-          {cameraMsg && (
-            <div className="banner caution" style={{ marginBottom: 10 }}>
-              <div>{cameraMsg}</div>
-            </div>
-          )}
+
           <div className="three-col" style={{ marginBottom: 14 }}>
             <div className="quick-item">
               <span className="quick-icon"><Radio /></span>
@@ -1803,6 +1747,7 @@ function Settings({
     { title: "Transcripción IA de notas de voz", detail: "Detección automática de barreras de movilidad en adultos mayores." },
     { title: "Idempotencia y Ring Buffer en Tótem ESP32-CAM", detail: "Evita lecturas duplicadas y almacena eventos ante microcortes." },
   ];
+
   return (
     <>
       {!canEdit && (
