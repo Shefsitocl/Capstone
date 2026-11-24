@@ -652,7 +652,7 @@ export class KuraStore {
     return { ok: true, appointment: appt, waitlistEntry: candidate };
   }
 
-  async analyzeAndRecordCommunication(input: {
+async analyzeAndRecordCommunication(input: {
     patientId: number;
     channel: string;
     transcript: string;
@@ -662,17 +662,26 @@ export class KuraStore {
       return { ok: false, error: "Paciente no encontrado." };
     }
 
-    const appt = this.state.appointments.find(
-      (a) => a.patientId === patient.id && (a.dayLabel === "Hoy" || a.dayLabel === "Mañana"),
-    );
+    const appt =
+      this.state.appointments.find(
+        (a) =>
+          a.patientId === patient.id &&
+          a.status !== "Presente en sala" &&
+          a.status !== "Cancelada",
+      ) ||
+      this.state.appointments.find(
+        (a) => a.patientId === patient.id && (a.dayLabel === "Hoy" || a.dayLabel === "Mañana"),
+      );
 
     const text = input.transcript.trim();
+    const firstName = patient.fullName.split(" ")[0];
+    const apptRef = appt ? `de las ${appt.scheduledTime} hrs en ${appt.boxNumber}` : "";
     const apiKey = this.getGeminiApiKey();
 
     let intent = "Consulta administrativa";
     let rootCause: string | null = null;
     let vulnerabilityAlert = false;
-    let suggestedReply = `Hola ${patient.fullName.split(" ")[0]}, recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME revisará tu solicitud.`;
+    let suggestedReply = `Hola ${firstName}, recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME revisará tu solicitud.`;
     let aiEngine = "Motor NLP Clínico Local";
 
     if (apiKey) {
@@ -721,26 +730,48 @@ Mensaje del paciente: "${text}"`;
 
     if (aiEngine === "Motor NLP Clínico Local") {
       const lower = text.toLowerCase();
-      if (/(no puedo ir|cancela|dolor|rodilla|caminar|locomoci|acompañ|enferm|hospital)/.test(lower)) {
+
+      const hasNegation =
+        /\bno\s+(puedo|podr[eé]|asistir[eé]|ir[eé]|voy|alcanzo|llego)\b/.test(lower) ||
+        /(cancela|suspender|imposible ir|no me es posible)/.test(lower);
+
+      const hasMobilityOrHealthBarrier =
+        /(dolor|rodilla|caminar|locomoci|movilidad|auto|lleve|llevar|transporte|pasaje|micro|metro|acompañ|enferm|hospital|urgencia|fiebre|reposo)/.test(
+          lower,
+        );
+
+      const wantsReschedule =
+        /(reagend|cambiar|mover|turno|trabajo|otro d[ií]a|otra hora|m[aá]s tarde|postergar)/.test(lower);
+
+      if (hasNegation || hasMobilityOrHealthBarrier) {
         intent = "Cancela por movilidad";
-        rootCause = "Barrera de movilidad / salud aguda";
-        vulnerabilityAlert = patient.preferentialLaw || patient.age >= 65;
-        suggestedReply = `Estimado/a ${patient.fullName.split(" ")[0]}, hemos liberado su cupo para evitar inasistencia y activamos seguimiento prioritario SOME.`;
-      } else if (/(reagend|cambiar|mover|turno|trabajo|otro d[ií]a|m[aá]s tarde)/.test(lower)) {
+        rootCause = hasMobilityOrHealthBarrier
+          ? "Barrera de movilidad / transporte o salud"
+          : "Cancelación informada por paciente";
+        vulnerabilityAlert = patient.preferentialLaw || patient.age >= 65 || hasMobilityOrHealthBarrier;
+        suggestedReply = hasMobilityOrHealthBarrier
+          ? `Lamentamos el inconveniente con tu traslado/salud, ${firstName}. Liberamos tu cupo ${apptRef} para evitar inasistencia y activamos seguimiento prioritario SOME.`
+          : `Entendido ${firstName}, hemos cancelado y liberado tu cupo ${apptRef}. Avísanos cuando desees reagendar tu atención.`;
+      } else if (wantsReschedule) {
         intent = "Solicita reagendar";
         rootCause = "Incompatibilidad horaria / laboral";
         vulnerabilityAlert = false;
-        suggestedReply = `Hola ${patient.fullName.split(" ")[0]}, registramos tu solicitud de cambio de bloque. El equipo SOME te contactará a la brevedad.`;
-      } else if (/(confirmo|s[ií],? voy|asistir[eé]|all[aá] estar[eé]|opci[oó]n 1|ok voy|presente)/.test(lower)) {
+        suggestedReply = `Hola ${firstName}, registramos tu solicitud de cambio de bloque ${apptRef}. El equipo SOME te contactará a la brevedad.`;
+      } else if (
+        !hasNegation &&
+        /(confirmo|s[ií],?\s*voy|asistir[eé]|all[aá] estar[eé]|opci[oó]n 1|ok voy|presente|ah[ií] estar[eé])/.test(
+          lower,
+        )
+      ) {
         intent = "Confirma asistencia";
         rootCause = null;
         vulnerabilityAlert = false;
-        suggestedReply = `Gracias ${patient.fullName.split(" ")[0]}, tu cita ${appt ? `de las ${appt.scheduledTime} hrs en ${appt.boxNumber}` : ""} ha quedado confirmada.`;
+        suggestedReply = `Gracias ${firstName}, tu cita ${apptRef} ha quedado confirmada.`;
       }
     }
 
     if (appt) {
-      if (intent === "Confirma asistencia" && appt.status === "Por confirmar") {
+      if (intent === "Confirma asistencia" && (appt.status === "Por confirmar" || appt.status === "Cancelada")) {
         appt.status = "Confirmada";
         appt.channel = input.channel;
       } else if (intent === "Cancela por movilidad" && appt.status !== "Presente en sala") {
@@ -751,7 +782,6 @@ Mensaje del paciente: "${text}"`;
       appt.riskScore = risk.riskScore;
       appt.riskReasons = risk.riskReasons;
     }
-
     const newComm: CommunicationItem = {
       id: this.state.communications.length + 1,
       appointmentId: appt ? appt.id : null,
