@@ -37,27 +37,21 @@ export interface Patient {
 }
 
 export interface Appointment {
-  id: number;
-  patientName: string;
-  rut: string;
-  age: number;
-  sector: string;
-  tramo: "A" | "B" | "C" | "D";
-  distanceKm: number;
-  historicalNspRate: number;
+  id: string;
+  patientId: number;
+  patient: Patient;
   specialty: string;
-  box: string;
-  professional: string;
-  day: string;
-  time: string;
-  status: AppointmentStatus;
+  boxNumber: string;
+  professionalName: string;
+  dayLabel: string;
+  scheduledTime: string;
+  status: string;
   channel: string;
   riskScore: number;
-  riskLevel: RiskLevel;
-  barrier: string;
-  preferential: boolean;
-  isRealEntry?: boolean;
-  checkedInAt?: string;
+  riskReasons: string[];
+  checkinAt?: string | null;
+  checkinSource?: string | null;
+  checkinLatencyMs?: number | null;
 }
 
 export interface WaitlistEntry {
