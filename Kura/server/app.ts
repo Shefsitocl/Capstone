@@ -171,7 +171,6 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
   const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
 
-  // 1. Envío directo con Body (funciona en texto libre dentro de sesión activa de 24h)
   const freeformParams = new URLSearchParams();
   freeformParams.append("To", formattedTo);
   freeformParams.append("From", formattedFrom);
@@ -198,7 +197,6 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
     return firstData;
   }
 
-  // 2. Si Twilio Trial exige ContentSid (fuera de ventana 24h), usa plantilla aprobada
   const errMsg = String(firstData.message || "");
   if (/ContentSid/i.test(errMsg) || firstData.code === 63016) {
     const contentSid = await resolveTwilioContentSid(sid, token, envContentSid);
@@ -463,7 +461,7 @@ app.post("/api/communications/:id/review", (req, res) => {
   res.json({ ok: true, item: updated });
 });
 
-// Webhook entrante de WhatsApp (Twilio: texto y notas de voz)
+// Webhook entrante de WhatsApp (Twilio: texto y notas de voz -> respuesta libre de Gemini vía TwiML)
 app.post("/api/webhooks/twilio", async (req, res) => {
   const body = (req.body || {}) as Record<string, unknown>;
   const messageSid = String(body.MessageSid || body.SmsMessageSid || "").trim();
@@ -514,13 +512,8 @@ app.post("/api/webhooks/twilio", async (req, res) => {
     }
 
     if (!transcript) {
-      if (fromRaw) {
-        await sendTwilioWhatsappMessage(
-          fromRaw,
-          "Hola, somos el asistente virtual de Kura · CESFAM Providencia. Escríbenos o envíanos una nota de voz indicando si confirmas o deseas reagendar tu hora.",
-        ).catch(() => {});
-      }
-      res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
+      const welcomeTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Hola, somos el asistente virtual de Kura · CESFAM Providencia. Escríbenos o envíanos una nota de voz indicando si confirmas o deseas reagendar tu hora.</Message></Response>`;
+      res.status(200).type("text/xml").send(welcomeTwiml);
       return;
     }
 
@@ -531,7 +524,7 @@ app.post("/api/webhooks/twilio", async (req, res) => {
       transcript,
     });
 
-    // Actualiza automáticamente la cita pendiente del paciente según la intención detectada
+    // Actualiza automáticamente la cita del paciente según su respuesta
     const intentLower = String(result.communication?.intent || "").toLowerCase();
     const transcriptLower = transcript.toLowerCase();
     const snapshot = kuraStore.getBootstrapData("SOPORTE IOT / TÓTEM");
@@ -567,28 +560,13 @@ app.post("/api/webhooks/twilio", async (req, res) => {
         ? result.communication.suggestedReply
         : `Hola ${patient.fullName.split(" ")[0]}, recibimos tu mensaje en Kura · CESFAM Providencia. Tu solicitud fue registrada por el equipo SOME.`;
 
-    // Envío activo por API REST (evita que el límite de 15s de TwiML descarte la respuesta en cold start)
-    if (fromRaw) {
-      try {
-        await sendTwilioWhatsappMessage(fromRaw, rawReply.slice(0, 1500));
-      } catch (sendErr) {
-        console.error("[Kura Twilio Reply] Error enviando respuesta activa:", sendErr);
-        const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(rawReply.slice(0, 1500))}</Message></Response>`;
-        res.status(200).type("text/xml").send(fallbackTwiml);
-        return;
-      }
-    }
-
-    res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
+    // Respuesta directa TwiML: permite texto libre personalizado en español en Twilio Trial
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(rawReply.slice(0, 1500))}</Message></Response>`;
+    res.status(200).type("text/xml").send(twiml);
   } catch (err) {
     console.error("[Kura Twilio Webhook] Error:", err);
-    if (fromRaw) {
-      await sendTwilioWhatsappMessage(
-        fromRaw,
-        "Recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME lo revisará a la brevedad.",
-      ).catch(() => {});
-    }
-    res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
+    const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME lo revisará a la brevedad.</Message></Response>`;
+    res.status(200).type("text/xml").send(fallbackTwiml);
   }
 });
 

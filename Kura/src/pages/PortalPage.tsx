@@ -288,8 +288,23 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
     }
   }, [user.role]);
 
-  useEffect(() => {
+useEffect(() => {
     fetchBootstrap();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchBootstrap();
+      }
+    }, 4000);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        fetchBootstrap();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [fetchBootstrap]);
 
   const sendRealWhatsapp = useCallback(
@@ -1100,7 +1115,7 @@ function Appointments({
                   style={{ width: "100%" }}
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+56 9 5030 9670"
+                  placeholder="+56 9 1234 5678"
                   required
                 />
               </div>
