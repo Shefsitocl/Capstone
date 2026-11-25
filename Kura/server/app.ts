@@ -11,6 +11,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 const processedTwilioSids = new Set<string>();
+let cachedTwilioContentSid: string | null = null;
 
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -43,7 +44,56 @@ function getCleanTwilioCreds(fallbackSid = "") {
   const sid = (process.env.TWILIO_ACCOUNT_SID || fallbackSid || "").replace(/[^a-zA-Z0-9]/g, "");
   const token = (process.env.TWILIO_AUTH_TOKEN || "").replace(/[^a-zA-Z0-9]/g, "");
   const fromRaw = (process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+17372508034").trim();
-  return { sid, token, fromRaw };
+  const envContentSid = (process.env.TWILIO_CONTENT_SID || "").replace(/[^a-zA-Z0-9]/g, "");
+  return { sid, token, fromRaw, envContentSid };
+}
+
+async function resolveTwilioContentSid(sid: string, token: string, envContentSid: string): Promise<string | null> {
+  if (envContentSid.startsWith("HX")) return envContentSid;
+  if (cachedTwilioContentSid) return cachedTwilioContentSid;
+
+  const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
+  const resp = await fetch("https://content.twilio.com/v1/Content?PageSize=20", {
+    headers: { Authorization: `Basic ${basicAuth}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!resp.ok) {
+    console.warn(`[Kura Twilio Content] No se pudo listar plantillas (${resp.status})`);
+    return null;
+  }
+
+  const data = (await resp.json()) as {
+    contents?: Array<{ sid?: string; friendly_name?: string }>;
+  };
+  const list = data.contents || [];
+  const preferred =
+    list.find((c) => /appointment|cita|reminder/i.test(String(c.friendly_name || ""))) || list[0];
+
+  if (preferred?.sid) {
+    cachedTwilioContentSid = preferred.sid;
+    return preferred.sid;
+  }
+  return null;
+}
+
+function buildContentVariablesFromMessage(messageBody: string): string {
+  const clean = messageBody.replace(/\s+/g, " ").trim();
+  const dayMatch = clean.match(/para\s+(.+?)\s+en\s+el\s+bloque/i);
+  const blockMatch = clean.match(/bloque\s+([0-9]{2}:[0-9]{2}\s*-\s*[0-9]{2}:[0-9]{2})/i);
+  const boxMatch = clean.match(/\((Box[^)]+)\)/i);
+
+  const var1 = dayMatch?.[1]
+    ? `${dayMatch[1]} · CESFAM Providencia`
+    : "CESFAM Providencia (Kura)";
+  const var2 = blockMatch?.[1]
+    ? `${blockMatch[1]} hrs${boxMatch?.[1] ? ` (${boxMatch[1]})` : ""}`
+    : clean.slice(0, 110);
+
+  return JSON.stringify({
+    "1": var1.slice(0, 120),
+    "2": var2.slice(0, 120),
+  });
 }
 
 async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Promise<Buffer> {
@@ -103,7 +153,7 @@ async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Pr
 }
 
 async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
-  const { sid, token, fromRaw } = getCleanTwilioCreds();
+  const { sid, token, fromRaw, envContentSid } = getCleanTwilioCreds();
 
   if (!sid || !token) {
     throw new Error("Credenciales de Twilio no configuradas en el servidor.");
@@ -114,28 +164,70 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
     ? toPhone
     : `whatsapp:${cleanDigits.startsWith("+") ? cleanDigits : `+${cleanDigits}`}`;
   const formattedFrom = fromRaw.startsWith("whatsapp:") ? fromRaw : `whatsapp:${fromRaw}`;
-
-  const params = new URLSearchParams();
-  params.append("To", formattedTo);
-  params.append("From", formattedFrom);
-  params.append("Body", messageBody.slice(0, 1500));
-
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
-  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+  const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+
+  // 1. Intento directo con Body (funciona cuando existe sesión abierta de 24h)
+  const freeformParams = new URLSearchParams();
+  freeformParams.append("To", formattedTo);
+  freeformParams.append("From", formattedFrom);
+  freeformParams.append("Body", messageBody.slice(0, 1500));
+
+  const firstResp = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Basic ${basicAuth}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: params.toString(),
+    body: freeformParams.toString(),
     signal: AbortSignal.timeout(9000),
   });
 
-  const data = (await resp.json()) as { sid?: string; message?: string; status?: string };
-  if (!resp.ok) {
-    throw new Error(data.message || `Error Twilio API (${resp.status})`);
+  const firstData = (await firstResp.json()) as {
+    sid?: string;
+    message?: string;
+    status?: string;
+    code?: number;
+  };
+
+  if (firstResp.ok) {
+    return firstData;
   }
-  return data;
+
+  // 2. Si Twilio Trial exige ContentSid, usa la plantilla aprobada (Appointment Reminders)
+  const errMsg = String(firstData.message || "");
+  if (/ContentSid/i.test(errMsg) || firstData.code === 63016) {
+    const contentSid = await resolveTwilioContentSid(sid, token, envContentSid);
+    if (!contentSid) {
+      throw new Error(
+        "Twilio Trial exige ContentSid y no se encontró ninguna plantilla aprobada en tu cuenta.",
+      );
+    }
+
+    const templateParams = new URLSearchParams();
+    templateParams.append("To", formattedTo);
+    templateParams.append("From", formattedFrom);
+    templateParams.append("ContentSid", contentSid);
+    templateParams.append("ContentVariables", buildContentVariablesFromMessage(messageBody));
+
+    const tplResp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: templateParams.toString(),
+      signal: AbortSignal.timeout(9000),
+    });
+
+    const tplData = (await tplResp.json()) as { sid?: string; message?: string; status?: string };
+    if (!tplResp.ok) {
+      throw new Error(tplData.message || `Error Twilio Content Template (${tplResp.status})`);
+    }
+    return tplData;
+  }
+
+  throw new Error(errMsg || `Error Twilio API (${firstResp.status})`);
 }
 
 app.use("/api", async (req, res, next) => {
