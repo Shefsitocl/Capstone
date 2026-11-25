@@ -1740,42 +1740,21 @@ function Communications({
           <div>
             <h2>Canales de contacto activos</h2>
           </div>
-          <Badge>{aiConnected ? "IA Gemini Activa" : "Motor Local"}</Badge>
+          <Badge>{aiConnected ? "IA Cloud Activa" : "Motor Local"}</Badge>
         </div>
         <div className="metric"><span>Motor IA Activo</span><b>{aiEngineName}</b></div>
         <div className="metric"><span>WhatsApp Business Webhook</span><Badge>Conectado</Badge></div>
         <div className="metric"><span>Voicebot IVR Adulto Mayor</span><Badge>Conectado</Badge></div>
-        {canEditSystemAdmin ? (
-          <>
-            <div style={{ marginTop: 12 }}>
-              <button type="button" className="button tiny primary" onClick={() => setShowKeyBox(!showKeyBox)}>
-                <KeyRound size={13} /> {aiConnected ? "Actualizar GEMINI_API_KEY" : "Configurar GEMINI_API_KEY (Soporte TI)"}
-              </button>
-            </div>
-            {showKeyBox && (
-              <form onSubmit={handleSaveGeminiKey} style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                <input
-                  type="password"
-                  className="control"
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                  placeholder="Pega tu clave AIzaSy... de Google AI Studio"
-                  required
-                />
-                <button type="submit" className="button tiny primary" disabled={savingKey}>
-                  {savingKey ? "Conectando..." : "Guardar y Activar IA Real"}
-                </button>
-              </form>
-            )}
-          </>
-        ) : (
-          <div className="inline-note" style={{ marginTop: 14 }}>
-            <ShieldCheck size={15} />
-            <span>La configuración de credenciales e integraciones técnicas es administrada exclusivamente por Soporte TI.</span>
-          </div>
-        )}
+        <div className="inline-note" style={{ marginTop: 14 }}>
+          <ShieldCheck size={15} />
+          <span>
+            {aiConnected
+              ? "Credenciales administradas exclusivamente en el servidor (.env). Sin exposición en interfaz web."
+              : "Motor local activo. Configure HF_TOKEN en el archivo .env del servidor para habilitar inferencia en la nube."}
+          </span>
+        </div>
       </section>
-    </div>
+  </div>
   );
 }
 

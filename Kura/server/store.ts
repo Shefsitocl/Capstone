@@ -140,7 +140,6 @@ export function validateRutModulo11(raw: string): boolean {
   const body = clean.slice(0, -1);
   const dv = clean.slice(-1);
   if (!/^\d+$/.test(body)) return false;
-
   let sum = 0;
   let multiplier = 2;
   for (let i = body.length - 1; i >= 0; i--) {
@@ -155,7 +154,6 @@ export function validateRutModulo11(raw: string): boolean {
 export function parseChileanIdQR(rawPayload: string): ParsedChileanId {
   const trimmed = rawPayload.trim();
   const isSidivUrl = /registrocivil\.cl/i.test(trimmed);
-
   let extractedRut = "";
   const urlRunMatch = trimmed.match(/RUN=([0-9]{6,8}-?[0-9kK])/i);
   if (urlRunMatch) {
@@ -164,14 +162,11 @@ export function parseChileanIdQR(rawPayload: string): ParsedChileanId {
     const plainMatch = trimmed.match(/([0-9]{1,2}\.?[0-9]{3}\.?[0-9]{3}-?[0-9kK])/);
     extractedRut = plainMatch ? plainMatch[1] : trimmed;
   }
-
   const typeMatch = trimmed.match(/type=([A-Z0-9_]+)/i);
   const serialMatch = trimmed.match(/serial=([0-9A-Z]+)/i);
-
   const rutDigits = normalizeRutDigits(extractedRut);
   const rutFormatted = formatChileanRut(extractedRut);
   const isValidMod11 = validateRutModulo11(extractedRut);
-
   return {
     rutDigits,
     rutFormatted,
@@ -189,11 +184,9 @@ export function computeNspRiskScore(
 ): { riskScore: number; riskReasons: string[] } {
   const reasons: string[] = [];
   let logit = -1.55;
-
   const nspRatio =
     patient.totalAppointments > 0 ? patient.nspHistoryCount / patient.totalAppointments : 0.15;
   const pct = Math.round(nspRatio * 100);
-
   if (patient.totalAppointments === 0) {
     reasons.push("Paciente nuevo sin historial previo");
   } else if (pct >= 30) {
@@ -206,29 +199,24 @@ export function computeNspRiskScore(
     logit -= 0.55;
     reasons.push("0% NSP histórico (adherente)");
   }
-
   if (patient.distanceKm >= 3.5) {
     logit += 0.25 * (patient.distanceKm - 1.5);
     reasons.push(`Distancia territorial ${patient.distanceKm.toFixed(1)} km`);
   }
-
   if (patient.preferentialLaw) {
     logit -= 0.22;
     reasons.push("Ley Preferente 20.584");
   }
-
   if (patient.age >= 70 && !hasMobilityOrWorkBarrier) {
     logit -= 0.2;
     reasons.push(`Adulto mayor (${patient.age} años)`);
   } else if (patient.age < 30) {
     logit += 0.28;
   }
-
   if (hasMobilityOrWorkBarrier) {
     logit += 1.25;
     reasons.push("Barrera reportada en canal omnicanal");
   }
-
   if (appointment.status === "Presente en sala") {
     logit -= 2.35;
     reasons.push("Acreditado presencialmente");
@@ -239,15 +227,13 @@ export function computeNspRiskScore(
     logit += 0.45;
     reasons.push("Pendiente confirmación T-24h");
   }
-
   const probability = 1 / (1 + Math.exp(-logit));
   const riskScore = Math.round(Math.max(5, Math.min(96, probability * 100)));
   return { riskScore, riskReasons: reasons.slice(0, 3) };
 }
 
 function createInitialData() {
-  // Cuentas institucionales del equipo CESFAM (modificables aquí o en prisma/seed.ts)
- const staffUsers: StaffUser[] = [
+  const staffUsers: StaffUser[] = [
     { id: 1, email: "some@cesfam.cl", password: "cesfam2026", fullName: "Camila Valdés Rojas", rut: "17.845.210-3", role: "ADMINISTRACIÓN SOME", unit: "Ventanilla Central SOME · Providencia", active: true, lastLoginAt: "Hoy, 07:45" },
     { id: 2, email: "odontologia@cesfam.cl", password: "cesfam2026", fullName: "Dr. Sebastián Muñoz P.", rut: "15.290.441-8", role: "ODONTOLOGÍA / BOX", unit: "Unidad Dental · Box 3 y 4", active: true, lastLoginAt: "Hoy, 08:02" },
     { id: 3, email: "coordinacion@cesfam.cl", password: "cesfam2026", fullName: "Dra. Paulina Contreras M.", rut: "13.904.112-K", role: "COORDINACIÓN CLÍNICA", unit: "Dirección Técnica APS", active: true, lastLoginAt: "Ayer, 17:30" },
@@ -343,6 +329,7 @@ function createInitialData() {
 export class KuraStore {
   private state = createInitialData();
   private pgPool: pg.Pool | null = null;
+  private resolvedGeminiModel: string | null = null;
 
   constructor() {
     if (process.env.DATABASE_URL) {
@@ -362,6 +349,83 @@ export class KuraStore {
     const token = conn?.authToken?.trim() || "";
     if (token && token.startsWith("AIza")) return token;
     return (process.env.GEMINI_API_KEY || "").trim();
+  }
+
+  private async getCandidateGeminiModels(geminiKey: string): Promise<string[]> {
+    if (this.resolvedGeminiModel) {
+      return [this.resolvedGeminiModel];
+    }
+
+    const listResp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`,
+    );
+    if (!listResp.ok) {
+      throw new Error(`Error listando modelos Gemini (${listResp.status})`);
+    }
+
+    const listData = (await listResp.json()) as {
+      models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+    };
+
+    const validModels = (listData.models || [])
+      .filter(
+        (m) =>
+          m.name &&
+          m.supportedGenerationMethods?.includes("generateContent") &&
+          !/image|tts|robotics|computer-use|deep-research/i.test(m.name),
+      )
+      .map((m) => m.name!);
+
+    const flashModels = validModels.filter((n) => /flash/i.test(n));
+    const ordered = flashModels.length > 0 ? flashModels : validModels;
+
+    if (ordered.length === 0) {
+      throw new Error("No hay modelos Gemini compatibles disponibles en esta clave.");
+    }
+    return ordered.slice(0, 4);
+  }
+
+  private async callGeminiGenerate(
+    geminiKey: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ text: string; modelLabel: string }> {
+    const candidates = await this.getCandidateGeminiModels(geminiKey);
+    let lastError = "Sin respuesta de Gemini";
+
+    for (const modelPath of candidates) {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (!resp.ok) {
+        const errBody = await resp.text();
+        lastError = `${modelPath} (${resp.status}): ${errBody.slice(0, 180)}`;
+        this.resolvedGeminiModel = null;
+        continue;
+      }
+
+      const data = (await resp.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      if (text) {
+        if (this.resolvedGeminiModel !== modelPath) {
+          this.resolvedGeminiModel = modelPath;
+          console.log(`[Kura IA] Modelo Gemini activo: ${modelPath}`);
+        }
+        return {
+          text,
+          modelLabel: modelPath.replace(/^models\//, ""),
+        };
+      }
+    }
+
+    throw new Error(lastError);
   }
 
   canViewSystemAdmin(role: string): boolean {
@@ -388,19 +452,22 @@ export class KuraStore {
 
     const allowViewAdmin = !requesterRole || this.canViewSystemAdmin(requesterRole);
     const allowEditAdmin = this.canEditSystemAdmin(requesterRole);
-
     const visibleConnectors = allowViewAdmin
       ? this.state.connectors.map((c) => ({
           ...c,
-          // Solo Soporte TI ve el token real; Coordinación Clínica en modo solo lectura ve token enmascarado
           authToken: allowEditAdmin ? c.authToken : c.authToken ? "••••••••••••" : "",
         }))
       : [];
 
+    const hasGemini = Boolean(this.getGeminiApiKey());
+    const activeModelText = this.resolvedGeminiModel
+      ? `Google ${this.resolvedGeminiModel.replace(/^models\//, "")} (Texto + Voz)`
+      : "Google Gemini Flash (Texto + Voz)";
+
     return {
       dbMode: this.pgPool ? "Neon PostgreSQL Conectado" : "Simulador Local + Datos Reales",
-      aiConnected: Boolean(this.getGeminiApiKey()),
-      aiEngineName: this.getGeminiApiKey() ? "Google Gemini 2.5 Flash (Conectado)" : "Motor NLP Clínico Local",
+      aiConnected: hasGemini,
+      aiEngineName: hasGemini ? activeModelText : "Motor NLP Clínico Local",
       mlModelVersion: this.state.mlModelVersion,
       mlLastCalculatedAt: this.state.mlLastCalculatedAt,
       kpis: {
@@ -456,10 +523,8 @@ export class KuraStore {
     if (!isValidMod11) {
       return { ok: false, error: `El RUT ${formattedRut} no supera la validación Módulo 11 de cédula chilena.` };
     }
-
     const digits = normalizeRutDigits(formattedRut);
     let patient = this.state.patients.find((p) => normalizeRutDigits(p.rut) === digits);
-
     if (!patient) {
       const nextId = this.state.patients.reduce((max, p) => Math.max(max, p.id), 0) + 1;
       patient = {
@@ -481,11 +546,9 @@ export class KuraStore {
       };
       this.state.patients.unshift(patient);
     }
-
     const apptNum = 8851 + this.state.appointments.length;
     const status = input.status || "Por confirmar";
     const risk = computeNspRiskScore(patient, { status, dayLabel: input.dayLabel || "Hoy" }, false);
-
     const newAppt: Appointment = {
       id: `RYN-2026-${apptNum}`,
       patientId: patient.id,
@@ -503,7 +566,6 @@ export class KuraStore {
       checkinAt: null,
       checkinLatencyMs: null,
     };
-
     this.state.appointments.unshift(newAppt);
     return { ok: true, appointment: newAppt, patient };
   }
@@ -513,7 +575,6 @@ export class KuraStore {
       this.state.mlModelVersion = modelVersion.slice(0, 60);
     }
     this.state.mlLastCalculatedAt = `Hoy, ${new Date().toTimeString().slice(0, 5)}`;
-
     for (const appt of this.state.appointments) {
       const hasBarrier = this.state.communications.some(
         (c) => c.patientId === appt.patientId && Boolean(c.rootCause),
@@ -522,7 +583,6 @@ export class KuraStore {
       appt.riskScore = riskScore;
       appt.riskReasons = riskReasons;
     }
-
     return {
       updated: this.state.appointments.length,
       modelVersion: this.state.mlModelVersion,
@@ -554,14 +614,11 @@ export class KuraStore {
         error: `Lectura rechazada: el RUT "${parsed.rutFormatted}" no cumple el Dígito Verificador Módulo 11 de la cédula chilena.`,
       };
     }
-
     const appt = this.state.appointments.find(
       (a) => a.dayLabel === "Hoy" && normalizeRutDigits(a.patient.rut) === parsed.rutDigits,
     );
-
     const patient = this.state.patients.find((p) => normalizeRutDigits(p.rut) === parsed.rutDigits);
     const nowStr = new Date().toTimeString().slice(0, 8);
-
     if (appt && appt.status === "Presente en sala") {
       return {
         ok: true,
@@ -572,7 +629,6 @@ export class KuraStore {
         appointment: appt,
       };
     }
-
     const eventRecord: IotEventItem = {
       id: this.state.iotEvents.length + 1,
       deviceId: deviceId.slice(0, 40),
@@ -591,7 +647,6 @@ export class KuraStore {
       createdAt: nowStr,
     };
     this.state.iotEvents.unshift(eventRecord);
-
     if (!appt) {
       return {
         ok: false,
@@ -601,9 +656,7 @@ export class KuraStore {
         event: eventRecord,
       };
     }
-
     this.manualCheckin(appt.id, "TOTEM_ESP32_QR", measuredMs);
-
     return {
       ok: true,
       alreadyCheckedIn: false,
@@ -629,18 +682,14 @@ export class KuraStore {
   executeSlotFilling(appointmentId: string, waitlistId?: number) {
     const appt = this.state.appointments.find((a) => a.id === appointmentId);
     if (!appt) return { ok: false, error: "Cita no encontrada." };
-
     const candidate = waitlistId
       ? this.state.waitlist.find((w) => w.id === waitlistId && w.status === "Disponible")
       : this.state.waitlist.find((w) => w.status === "Disponible");
-
     if (!candidate) {
       return { ok: false, error: "No hay pacientes disponibles en la lista de espera priorizada." };
     }
-
     candidate.status = "Asignado";
     candidate.assignedAppointmentId = appt.id;
-
     appt.patientId = candidate.patientId;
     appt.patient = candidate.patient;
     appt.status = "Reasignada";
@@ -648,11 +697,57 @@ export class KuraStore {
     const risk = computeNspRiskScore(appt.patient, appt, false);
     appt.riskScore = risk.riskScore;
     appt.riskReasons = ["Cupo recuperado vía lista de espera", ...risk.riskReasons.slice(0, 2)];
-
     return { ok: true, appointment: appt, waitlistEntry: candidate };
   }
 
-async analyzeAndRecordCommunication(input: {
+  findPatientByPhone(rawPhone: string) {
+    const digits = rawPhone.replace(/\D/g, "");
+    const tail = digits.slice(-8);
+    if (tail.length >= 8) {
+      const byPhone = this.state.patients.find((p) => p.phone.replace(/\D/g, "").endsWith(tail));
+      if (byPhone) return byPhone;
+    }
+    const pendingToday = this.state.appointments.find(
+      (a) => a.dayLabel === "Hoy" && a.status === "Por confirmar",
+    );
+    if (pendingToday) {
+      return this.state.patients.find((p) => p.id === pendingToday.patientId) || this.state.patients[0];
+    }
+    return this.state.patients[0];
+  }
+
+  async transcribeAudioBuffer(audioBuffer: Buffer, mimeType = "audio/ogg"): Promise<string> {
+    const geminiKey = this.getGeminiApiKey();
+    if (!geminiKey) {
+      throw new Error("GEMINI_API_KEY no configurado en el servidor (.env).");
+    }
+
+    const { text } = await this.callGeminiGenerate(geminiKey, {
+      contents: [
+        {
+          parts: [
+            {
+              text: "Transcribe literalmente en español lo que dice el paciente en este audio clínico. Devuelve únicamente la transcripción exacta, sin comentarios ni comillas.",
+            },
+            {
+              inlineData: {
+                mimeType,
+                data: audioBuffer.toString("base64"),
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.1 },
+    });
+
+    if (!text) {
+      throw new Error("No se detectó voz audible en el audio enviado.");
+    }
+    return text;
+  }
+
+  async analyzeAndRecordCommunication(input: {
     patientId: number;
     channel: string;
     transcript: string;
@@ -676,7 +771,6 @@ async analyzeAndRecordCommunication(input: {
     const text = input.transcript.trim();
     const firstName = patient.fullName.split(" ")[0];
     const apptRef = appt ? `de las ${appt.scheduledTime} hrs en ${appt.boxNumber}` : "";
-    const apiKey = this.getGeminiApiKey();
 
     let intent = "Consulta administrativa";
     let rootCause: string | null = null;
@@ -684,47 +778,38 @@ async analyzeAndRecordCommunication(input: {
     let suggestedReply = `Hola ${firstName}, recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME revisará tu solicitud.`;
     let aiEngine = "Motor NLP Clínico Local";
 
-    if (apiKey) {
+    const geminiKey = this.getGeminiApiKey();
+
+    if (geminiKey) {
       try {
-        const prompt = `Eres el asistente de IA clínica omnicanal Kura de un CESFAM en Chile. Analiza este mensaje de un paciente (${patient.fullName}, edad ${patient.age} años, Ley Preferente 20.584: ${patient.preferentialLaw ? "Sí" : "No"}) y responde ÚNICAMENTE un JSON válido con las claves:
+        const prompt = `Eres el asistente de IA clínica omnicanal Kura de un CESFAM en Chile. Analiza este mensaje de un paciente (${patient.fullName}, edad ${patient.age} años, Ley Preferente 20.584: ${patient.preferentialLaw ? "Sí" : "No"}) y responde ÚNICAMENTE un JSON válido sin markdown con las claves:
 - "intent": uno exacto entre ["Confirma asistencia", "Cancela por movilidad", "Solicita reagendar", "Consulta administrativa"]
 - "rootCause": string breve explicando la barrera si cancela o reagenda (ej. "Barrera de movilidad / transporte", "Incompatibilidad horaria laboral") o null si confirma
-- "vulnerabilityAlert": boolean (true si es adulto mayor o Ley Preferente y reporta dolor, dificultad de movilidad o falta de acompañante)
-- "suggestedReply": respuesta breve, empática y formal en español chileno para enviar al paciente.
+- "vulnerabilityAlert": boolean (true si es adulto mayor >= 65 o Ley Preferente y reporta dolor, dificultad de movilidad o falta de acompañante)
+- "suggestedReply": respuesta breve, empática y formal en español chileno para enviar al paciente mencionando su hora ${apptRef} si corresponde.
 
 Mensaje del paciente: "${text}"`;
 
-        const geminiResp = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { responseMimeType: "application/json", temperature: 0.2 },
-            }),
-          },
-        );
+        const { text: rawResponse, modelLabel } = await this.callGeminiGenerate(geminiKey, {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
+        });
 
-        if (geminiResp.ok) {
-          const geminiData = (await geminiResp.json()) as {
-            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-          };
-          const rawJson = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          const parsed = JSON.parse(rawJson) as {
-            intent?: string;
-            rootCause?: string | null;
-            vulnerabilityAlert?: boolean;
-            suggestedReply?: string;
-          };
-          if (parsed.intent) intent = parsed.intent;
-          rootCause = parsed.rootCause ?? null;
-          vulnerabilityAlert = Boolean(parsed.vulnerabilityAlert);
-          if (parsed.suggestedReply) suggestedReply = parsed.suggestedReply;
-          aiEngine = "Google Gemini 2.5 Flash (API Real)";
-        }
-      } catch {
-        // Fallback to local NLP below
+        const rawJson = rawResponse.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(rawJson) as {
+          intent?: string;
+          rootCause?: string | null;
+          vulnerabilityAlert?: boolean;
+          suggestedReply?: string;
+        };
+
+        if (parsed.intent) intent = parsed.intent;
+        rootCause = parsed.rootCause ?? null;
+        vulnerabilityAlert = Boolean(parsed.vulnerabilityAlert);
+        if (parsed.suggestedReply) suggestedReply = parsed.suggestedReply;
+        aiEngine = `Google ${modelLabel} (API Real)`;
+      } catch (err) {
+        console.warn("[Kura IA] Fallback local activado:", err instanceof Error ? err.message : err);
       }
     }
 
@@ -732,7 +817,7 @@ Mensaje del paciente: "${text}"`;
       const lower = text.toLowerCase();
 
       const hasNegation =
-        /\bno\s+(puedo|podr[eé]|asistir[eé]|ir[eé]|voy|alcanzo|llego)\b/.test(lower) ||
+        /\bno\s+(puedo|podr[eé]|asistir[eé]|ir[eé]|voy|alcanzo|llego)(?=$|\s|[.,;!?])/.test(lower) ||
         /(cancela|suspender|imposible ir|no me es posible)/.test(lower);
 
       const hasMobilityOrHealthBarrier =
@@ -782,6 +867,7 @@ Mensaje del paciente: "${text}"`;
       appt.riskScore = risk.riskScore;
       appt.riskReasons = risk.riskReasons;
     }
+
     const newComm: CommunicationItem = {
       id: this.state.communications.length + 1,
       appointmentId: appt ? appt.id : null,
