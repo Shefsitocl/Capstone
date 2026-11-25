@@ -121,20 +121,42 @@ export interface ParsedChileanId {
   registryAuthority: string;
 }
 
+const VALID_INTENTS = [
+  "Confirma asistencia",
+  "Cancela por movilidad",
+  "Solicita reagendar",
+  "Consulta administrativa",
+] as const;
+
 function getChileTimeString(includeSeconds = false): string {
-  return new Date()
-    .toLocaleTimeString("es-CL", {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
       hour: "2-digit",
       minute: "2-digit",
       ...(includeSeconds ? { second: "2-digit" } : {}),
       hour12: false,
       timeZone: "America/Santiago",
     })
-    .replace(/^24:/, "00:");
+      .format(new Date())
+      .replace(/^24:/, "00:");
+  } catch {
+    return new Date()
+      .toLocaleTimeString("es-CL", {
+        hour: "2-digit",
+        minute: "2-digit",
+        ...(includeSeconds ? { second: "2-digit" } : {}),
+        hour12: false,
+        timeZone: "America/Santiago",
+      })
+      .replace(/^24:/, "00:");
+  }
 }
 
 export function normalizeRutDigits(raw: string): string {
-  return raw.replace(/[^0-9kK]/g, "").toUpperCase();
+  return raw
+    .replace(/[^0-9kK]/g, "")
+    .toUpperCase()
+    .replace(/^0+/, "");
 }
 
 export function formatChileanRut(raw: string): string {
@@ -169,7 +191,7 @@ export function parseChileanIdQR(rawPayload: string): ParsedChileanId {
   const isSidivUrl = /registrocivil\.cl/i.test(trimmed);
 
   let extractedRut = "";
-  const urlRunMatch = trimmed.match(/RUN=([0-9]{6,8}-?[0-9kK])/i);
+  const urlRunMatch = trimmed.match(/RUN=([0-9]{6,9}-?[0-9kK])/i);
   if (urlRunMatch) {
     extractedRut = urlRunMatch[1];
   } else {
@@ -257,6 +279,21 @@ export function computeNspRiskScore(
   return { riskScore, riskReasons: reasons.slice(0, 3) };
 }
 
+function normalizeIntentLabel(rawIntent: string | undefined): string {
+  if (!rawIntent) return "Consulta administrativa";
+  const clean = rawIntent.trim().toLowerCase();
+  const exact = VALID_INTENTS.find((v) => v.toLowerCase() === clean);
+  if (exact) return exact;
+  if (clean.includes("confirm")) return "Confirma asistencia";
+  if (clean.includes("reagend") || clean.includes("cambio") || clean.includes("mover")) {
+    return "Solicita reagendar";
+  }
+  if (clean.includes("cancel") || clean.includes("movilidad") || clean.includes("no asist")) {
+    return "Cancela por movilidad";
+  }
+  return "Consulta administrativa";
+}
+
 function createInitialData() {
   const staffUsers: StaffUser[] = [
     { id: 1, email: "some@cesfam.cl", password: "cesfam2026", fullName: "Camila Valdés Rojas", rut: "17.845.210-3", role: "ADMINISTRACIÓN SOME", unit: "Ventanilla Central SOME · Providencia", active: true, lastLoginAt: "Hoy, 07:45" },
@@ -331,9 +368,11 @@ function createInitialData() {
     },
   ];
 
+  const envGeminiKey = (process.env.GEMINI_API_KEY || "").replace(/^["']|["']$/g, "").trim();
+
   const connectors: ConnectorItem[] = [
     { id: "xgboost", name: "IA Predictiva · XGBoost (Colab)", scope: "Cálculo real de probabilidad NSP y factores clínicos", endpointUrl: process.env.XGBOOST_SERVICE_URL || "http://localhost:5000/api/ml/recalculate", authToken: "kura-ml-colab-2026", dbTarget: "Neon · kura_ia_predictiva", status: "Conectado", lastCheckedAt: "Motor activo" },
-    { id: "voice_ai", name: "IA Conversacional · Google Gemini", scope: "Clasificación de intención y análisis de barreras sociales", endpointUrl: "https://generativelanguage.googleapis.com/v1beta", authToken: process.env.GEMINI_API_KEY || "", dbTarget: "Neon · kura_ia_contacto", status: process.env.GEMINI_API_KEY ? "Conectado" : "En pruebas", lastCheckedAt: process.env.GEMINI_API_KEY ? "Gemini API Key activa" : "NLP local (sin API Key aún)" },
+    { id: "voice_ai", name: "IA Conversacional · Google Gemini", scope: "Clasificación de intención y análisis de barreras sociales", endpointUrl: "https://generativelanguage.googleapis.com/v1beta", authToken: envGeminiKey, dbTarget: "Neon · kura_ia_contacto", status: envGeminiKey ? "Conectado" : "En pruebas", lastCheckedAt: envGeminiKey ? "Gemini API Key activa" : "NLP local (sin API Key aún)" },
     { id: "whatsapp", name: "WhatsApp Business API", scope: "Confirmación y cancelación bidireccional T-48h/T-24h", endpointUrl: "https://graph.facebook.com/v20.0/cesfam-providencia", authToken: "wa-meta-pilot-token", dbTarget: "Neon · kura_ia_contacto", status: "Conectado", lastCheckedAt: "Webhook listo" },
     { id: "rayen", name: "RCE · Rayen Salud / AVIS (Simulador)", scope: "Gestión de pacientes, fichas clínicas y agenda APS", endpointUrl: process.env.DATABASE_URL ? "Neon PostgreSQL Activo" : "neon://kura_panel_rayen/public", authToken: "rayen-sandbox-ro", dbTarget: "Neon · kura_panel_rayen", status: "Conectado", lastCheckedAt: "En línea" },
     { id: "esp32", name: "Tótem IoT · ESP32-CAM QR Cédula", scope: "Validación Módulo 11, Serie Cédula y anti-duplicado (< 500 ms)", endpointUrl: "/api/iot/checkin", authToken: process.env.IOT_DEVICE_TOKEN || "totem-some-providencia-2026", dbTarget: "Neon · kura_iot_totem", status: "Conectado", lastCheckedAt: "Idempotencia activa" },
@@ -357,6 +396,7 @@ export class KuraStore {
   private pgPool: pg.Pool | null = null;
   private resolvedGeminiModel: string | null = null;
   private lastLoadedFromDbAt = 0;
+  private hasHydratedFromDb = false;
   private initPromise: Promise<void> | null = null;
 
   constructor() {
@@ -365,6 +405,9 @@ export class KuraStore {
         this.pgPool = new pg.Pool({
           connectionString: process.env.DATABASE_URL,
           ssl: process.env.DATABASE_URL.includes("neon.tech") ? { rejectUnauthorized: false } : undefined,
+          max: 5,
+          idleTimeoutMillis: 10000,
+          connectionTimeoutMillis: 5000,
         });
       } catch {
         this.pgPool = null;
@@ -374,7 +417,7 @@ export class KuraStore {
 
   async ensureReady(): Promise<void> {
     if (!this.pgPool) return;
-    if (Date.now() - this.lastLoadedFromDbAt < 2500) return;
+    if (this.hasHydratedFromDb && Date.now() - this.lastLoadedFromDbAt < 2500) return;
     if (!this.initPromise) {
       this.initPromise = this.initAndLoadNeon().finally(() => {
         this.initPromise = null;
@@ -427,6 +470,8 @@ export class KuraStore {
       const res = await this.pgPool.query<{ payload: ReturnType<typeof createInitialData> }>(
         `SELECT payload FROM kura_pilot_state WHERE id = 'default' LIMIT 1`,
       );
+      this.hasHydratedFromDb = true;
+
       if (res.rows.length > 0 && res.rows[0].payload) {
         const defaultData = createInitialData();
         const savedPayload = res.rows[0].payload;
@@ -439,6 +484,15 @@ export class KuraStore {
           ...savedPayload,
           staffUsers: [...savedStaff, ...missingStaff],
         };
+
+        // Sincroniza GEMINI_API_KEY de Vercel si el conector en Neon estaba vacío o enmascarado
+        const envGeminiKey = (process.env.GEMINI_API_KEY || "").replace(/^["']|["']$/g, "").trim();
+        const voiceConn = this.state.connectors.find((c) => c.id === "voice_ai");
+        if (voiceConn && envGeminiKey && (!voiceConn.authToken || voiceConn.authToken.includes("•"))) {
+          voiceConn.authToken = envGeminiKey;
+          voiceConn.status = "Conectado";
+          voiceConn.lastCheckedAt = "Gemini API Key activa";
+        }
 
         if (missingStaff.length > 0) {
           await this.persistToNeon();
@@ -454,6 +508,9 @@ export class KuraStore {
 
   async persistToNeon(): Promise<void> {
     if (!this.pgPool) return;
+    if (!this.hasHydratedFromDb) {
+      await this.ensureReady();
+    }
     try {
       await this.pgPool.query(
         `INSERT INTO kura_pilot_state (id, payload, updated_at)
@@ -461,30 +518,34 @@ export class KuraStore {
          ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
         [JSON.stringify(this.state)],
       );
-      for (const p of this.state.patients.slice(0, 20)) {
-        await this.pgPool.query(
-          `INSERT INTO kura_pacientes (id, rut, ficha_rayen, nombre_completo, edad, sector, ley_preferente, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-           ON CONFLICT (id) DO UPDATE SET sector = EXCLUDED.sector, ley_preferente = EXCLUDED.ley_preferente, updated_at = NOW()`,
-          [p.id, p.rut, p.rayenFicha, p.fullName, p.age, p.sector, p.preferentialLaw],
-        );
-      }
-      for (const a of this.state.appointments.slice(0, 25)) {
-        await this.pgPool.query(
-          `INSERT INTO kura_citas (id, paciente_id, especialidad, box, dia, hora, estado, riesgo_nsp, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-           ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, riesgo_nsp = EXCLUDED.riesgo_nsp, updated_at = NOW()`,
-          [a.id, a.patientId, a.specialty, a.boxNumber, a.dayLabel, a.scheduledTime, a.status, a.riskScore],
-        );
-      }
-      for (const c of this.state.communications.slice(0, 25)) {
-        await this.pgPool.query(
-          `INSERT INTO kura_comunicaciones (id, paciente_nombre, canal, intencion, transcripcion, motor_ia, estado_revision)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (id) DO UPDATE SET estado_revision = EXCLUDED.estado_revision, intencion = EXCLUDED.intencion`,
-          [c.id, c.patientName, c.channel, c.intent, c.transcript, c.aiEngine || "Motor NLP", c.reviewStatus],
-        );
-      }
+
+      await Promise.all([
+        ...this.state.patients.slice(0, 20).map((p) =>
+          this.pgPool!.query(
+            `INSERT INTO kura_pacientes (id, rut, ficha_rayen, nombre_completo, edad, sector, ley_preferente, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+             ON CONFLICT (id) DO UPDATE SET sector = EXCLUDED.sector, ley_preferente = EXCLUDED.ley_preferente, updated_at = NOW()`,
+            [p.id, p.rut, p.rayenFicha, p.fullName, p.age, p.sector, p.preferentialLaw],
+          ),
+        ),
+        ...this.state.appointments.slice(0, 25).map((a) =>
+          this.pgPool!.query(
+            `INSERT INTO kura_citas (id, paciente_id, especialidad, box, dia, hora, estado, riesgo_nsp, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+             ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, riesgo_nsp = EXCLUDED.riesgo_nsp, updated_at = NOW()`,
+            [a.id, a.patientId, a.specialty, a.boxNumber, a.dayLabel, a.scheduledTime, a.status, a.riskScore],
+          ),
+        ),
+        ...this.state.communications.slice(0, 25).map((c) =>
+          this.pgPool!.query(
+            `INSERT INTO kura_comunicaciones (id, paciente_nombre, canal, intencion, transcripcion, motor_ia, estado_revision)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET estado_revision = EXCLUDED.estado_revision, intencion = EXCLUDED.intencion`,
+            [c.id, c.patientName, c.channel, c.intent, c.transcript, c.aiEngine || "Motor NLP", c.reviewStatus],
+          ),
+        ),
+      ]);
+
       this.lastLoadedFromDbAt = Date.now();
     } catch (err) {
       console.error("[Kura Neon] Error guardando en PostgreSQL:", err);
@@ -493,65 +554,60 @@ export class KuraStore {
 
   getGeminiApiKey(): string {
     const conn = this.state.connectors.find((c) => c.id === "voice_ai");
-    const token = conn?.authToken?.trim() || "";
-    if (token && token.startsWith("AIza")) return token;
-    return (process.env.GEMINI_API_KEY || "").trim();
+    const token = (conn?.authToken || "").replace(/^["']|["']$/g, "").trim();
+    if (token && token.startsWith("AIza") && !token.includes("•")) {
+      return token;
+    }
+    return (process.env.GEMINI_API_KEY || "").replace(/^["']|["']$/g, "").trim();
   }
 
-  private async getCandidateGeminiModels(geminiKey: string): Promise<string[]> {
+  private getCandidateGeminiModels(): string[] {
     if (this.resolvedGeminiModel) {
       return [this.resolvedGeminiModel];
     }
-    const listResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`,
-      { signal: AbortSignal.timeout(6000) },
-    );
-    if (!listResp.ok) {
-      throw new Error(`Error listando modelos Gemini (${listResp.status})`);
-    }
-    const listData = (await listResp.json()) as {
-      models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
-    };
-    const validModels = (listData.models || [])
-      .filter(
-        (m) =>
-          m.name &&
-          m.supportedGenerationMethods?.includes("generateContent") &&
-          !/image|tts|robotics|computer-use|deep-research|thinking/i.test(m.name),
-      )
-      .map((m) => m.name!);
-
-    const flashModels = validModels.filter((n) => /flash/i.test(n));
-    const ordered = flashModels.length > 0 ? flashModels : validModels;
-    if (ordered.length === 0) {
-      throw new Error("No hay modelos Gemini compatibles disponibles en esta clave.");
-    }
-    return ordered.slice(0, 3);
+    return [
+      "models/gemini-2.5-flash",
+      "models/gemini-2.5-flash-lite",
+      "models/gemini-2.0-flash",
+    ];
   }
 
   private async callGeminiGenerate(
     geminiKey: string,
     payload: Record<string, unknown>,
   ): Promise<{ text: string; modelLabel: string }> {
-    const candidates = await this.getCandidateGeminiModels(geminiKey);
+    const candidates = this.getCandidateGeminiModels();
     let lastError = "Sin respuesta de Gemini";
 
     for (const modelPath of candidates) {
+      const requestPayload: Record<string, unknown> = { ...payload };
+      const baseGenConfig =
+        requestPayload.generationConfig && typeof requestPayload.generationConfig === "object"
+          ? { ...(requestPayload.generationConfig as Record<string, unknown>) }
+          : {};
+
+      if (modelPath.includes("2.5")) {
+        baseGenConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+      requestPayload.generationConfig = baseGenConfig;
+
       const resp = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(8000),
+          body: JSON.stringify(requestPayload),
+          signal: AbortSignal.timeout(14000),
         },
       );
+
       if (!resp.ok) {
         const errBody = await resp.text();
         lastError = `${modelPath} (${resp.status}): ${errBody.slice(0, 180)}`;
         this.resolvedGeminiModel = null;
         continue;
       }
+
       const data = (await resp.json()) as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
       };
@@ -607,7 +663,7 @@ export class KuraStore {
     const hasGemini = Boolean(this.getGeminiApiKey());
     const activeModelText = this.resolvedGeminiModel
       ? `Google ${this.resolvedGeminiModel.replace(/^models\//, "")} (Texto + Voz)`
-      : "Google Gemini Flash (Texto + Voz)";
+      : "Google Gemini 2.5 Flash (Texto + Voz)";
 
     return {
       dbMode: this.pgPool ? "Neon PostgreSQL Conectado" : "Simulador Local + Datos Reales",
@@ -694,7 +750,12 @@ export class KuraStore {
       this.state.patients.unshift(patient);
     }
 
-    const apptNum = 8851 + this.state.appointments.length;
+    const maxApptNum = this.state.appointments.reduce((max, a) => {
+      const num = Number(a.id.split("-").pop() || "8850");
+      return Number.isFinite(num) ? Math.max(max, num) : max;
+    }, 8850);
+    const apptNum = maxApptNum + 1;
+
     const status = input.status || "Por confirmar";
     const risk = computeNspRiskScore(patient, { status, dayLabel: input.dayLabel || "Hoy" }, false);
 
@@ -742,16 +803,21 @@ export class KuraStore {
     };
   }
 
-  manualCheckin(appointmentId: string, source: "MANUAL_SOME_DESK" | "TOTEM_ESP32_QR" = "MANUAL_SOME_DESK", latencyMs = 45) {
+  manualCheckin(
+    appointmentId: string,
+    source: "MANUAL_SOME_DESK" | "TOTEM_ESP32_QR" = "MANUAL_SOME_DESK",
+    latencyMs = 45,
+  ) {
     const appt = this.state.appointments.find((a) => a.id === appointmentId);
     if (!appt) return null;
 
-    const hhmm = getChileTimeString();
+    if (appt.status !== "Presente en sala") {
+      appt.checkinAt = getChileTimeString();
+      appt.checkinSource = source;
+      appt.checkinLatencyMs = latencyMs;
+    }
     appt.status = "Presente en sala";
     appt.channel = source === "TOTEM_ESP32_QR" ? "Tótem QR" : "Mesón SOME (Manual)";
-    appt.checkinSource = source;
-    appt.checkinAt = hhmm;
-    appt.checkinLatencyMs = latencyMs;
 
     const risk = computeNspRiskScore(appt.patient, appt, false);
     appt.riskScore = risk.riskScore;
@@ -759,7 +825,13 @@ export class KuraStore {
     return appt;
   }
 
-  checkinByRutOrQR(rawPayload: string, deviceId = "TOTEM-SOME-01", hardwareType = "ESP32-CAM · Lector QR Cédula", offlineBuffered = false, measuredMs = 195) {
+  checkinByRutOrQR(
+    rawPayload: string,
+    deviceId = "TOTEM-SOME-01",
+    hardwareType = "ESP32-CAM · Lector QR Cédula",
+    offlineBuffered = false,
+    measuredMs = 195,
+  ) {
     const parsed = parseChileanIdQR(rawPayload);
     if (!parsed.rutDigits || parsed.rutDigits.length < 7 || !parsed.isValidMod11) {
       return {
@@ -786,8 +858,9 @@ export class KuraStore {
       };
     }
 
+    const nextEventId = this.state.iotEvents.reduce((max, e) => Math.max(max, e.id), 0) + 1;
     const eventRecord: IotEventItem = {
-      id: this.state.iotEvents.length + 1,
+      id: nextEventId,
       deviceId: deviceId.slice(0, 40),
       hardwareType: hardwareType.slice(0, 60),
       qrRawPayload: rawPayload.slice(0, 240),
@@ -883,10 +956,15 @@ export class KuraStore {
   }
 
   async transcribeAudioBuffer(audioBuffer: Buffer, mimeType = "audio/ogg"): Promise<string> {
+    if (!audioBuffer || audioBuffer.length === 0) {
+      throw new Error("El archivo de audio recibido está vacío.");
+    }
     const geminiKey = this.getGeminiApiKey();
     if (!geminiKey) {
       throw new Error("GEMINI_API_KEY no configurado en el servidor (.env).");
     }
+
+    const cleanMime = (mimeType || "audio/ogg").split(";")[0].trim() || "audio/ogg";
 
     const { text } = await this.callGeminiGenerate(geminiKey, {
       contents: [
@@ -897,7 +975,7 @@ export class KuraStore {
             },
             {
               inlineData: {
-                mimeType,
+                mimeType: cleanMime,
                 data: audioBuffer.toString("base64"),
               },
             },
@@ -959,17 +1037,25 @@ Mensaje del paciente: "${text}"`;
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
         });
-        const rawJson = rawResponse.replace(/```json|```/g, "").trim();
-        const parsed = JSON.parse(rawJson) as {
+
+        const jsonMatch = rawResponse.replace(/```json|```/g, "").trim().match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          throw new Error("Respuesta de Gemini sin objeto JSON válido.");
+        }
+
+        const parsed = JSON.parse(jsonMatch[0]) as {
           intent?: string;
           rootCause?: string | null;
           vulnerabilityAlert?: boolean;
           suggestedReply?: string;
         };
-        if (parsed.intent) intent = parsed.intent;
+
+        intent = normalizeIntentLabel(parsed.intent);
         rootCause = parsed.rootCause ?? null;
         vulnerabilityAlert = Boolean(parsed.vulnerabilityAlert);
-        if (parsed.suggestedReply) suggestedReply = parsed.suggestedReply;
+        if (parsed.suggestedReply && parsed.suggestedReply.trim()) {
+          suggestedReply = parsed.suggestedReply.trim();
+        }
         aiEngine = `Google ${modelLabel} (API Real)`;
       } catch (err) {
         console.warn("[Kura IA] Fallback local activado:", err instanceof Error ? err.message : err);
@@ -988,7 +1074,15 @@ Mensaje del paciente: "${text}"`;
       const wantsReschedule =
         /(reagend|cambiar|mover|turno|trabajo|otro d[ií]a|otra hora|m[aá]s tarde|postergar)/.test(lower);
 
-      if (hasNegation || hasMobilityOrHealthBarrier) {
+      if (wantsReschedule) {
+        intent = "Solicita reagendar";
+        rootCause = hasMobilityOrHealthBarrier
+          ? "Barrera de movilidad / transporte o salud"
+          : "Incompatibilidad horaria / solicitud de cambio";
+        vulnerabilityAlert =
+          hasMobilityOrHealthBarrier && (patient.preferentialLaw || patient.age >= 65);
+        suggestedReply = `Hola ${firstName}, registramos tu solicitud de reagendamiento para tu cita ${apptRef}. El equipo SOME te contactará con las nuevas alternativas.`;
+      } else if (hasNegation || hasMobilityOrHealthBarrier) {
         intent = "Cancela por movilidad";
         rootCause = hasMobilityOrHealthBarrier
           ? "Barrera de movilidad / transporte o salud"
@@ -997,11 +1091,6 @@ Mensaje del paciente: "${text}"`;
         suggestedReply = hasMobilityOrHealthBarrier
           ? `Lamentamos el inconveniente con tu traslado/salud, ${firstName}. Liberamos tu cupo ${apptRef} para evitar inasistencia y activamos seguimiento prioritario SOME.`
           : `Entendido ${firstName}, hemos cancelado y liberado tu cupo ${apptRef}. Avísanos cuando desees reagendar tu atención.`;
-      } else if (wantsReschedule) {
-        intent = "Solicita reagendar";
-        rootCause = "Incompatibilidad horaria / laboral";
-        vulnerabilityAlert = false;
-        suggestedReply = `Hola ${firstName}, registramos tu solicitud de cambio de bloque ${apptRef}. El equipo SOME te contactará a la brevedad.`;
       } else if (
         !hasNegation &&
         /(confirmo|s[ií],?\s*voy|asistir[eé]|all[aá] estar[eé]|opci[oó]n 1|ok voy|presente|ah[ií] estar[eé])/.test(
@@ -1028,8 +1117,9 @@ Mensaje del paciente: "${text}"`;
       appt.riskReasons = risk.riskReasons;
     }
 
+    const nextCommId = this.state.communications.reduce((max, c) => Math.max(max, c.id), 0) + 1;
     const newComm: CommunicationItem = {
-      id: this.state.communications.length + 1,
+      id: nextCommId,
       appointmentId: appt ? appt.id : null,
       patientId: patient.id,
       patientName: patient.fullName,
@@ -1060,17 +1150,21 @@ Mensaje del paciente: "${text}"`;
     const conn = this.state.connectors.find((c) => c.id === id);
     if (!conn) return null;
     if (typeof data.endpointUrl === "string") conn.endpointUrl = data.endpointUrl.slice(0, 250);
-    if (typeof data.authToken === "string") conn.authToken = data.authToken.slice(0, 250);
+    if (typeof data.authToken === "string" && !data.authToken.includes("•")) {
+      conn.authToken = data.authToken.slice(0, 250);
+    }
     if (typeof data.dbTarget === "string") conn.dbTarget = data.dbTarget.slice(0, 100);
     if (data.status === "Conectado" || data.status === "Sin configurar" || data.status === "En pruebas") {
       conn.status = data.status;
     }
     conn.lastCheckedAt = "Actualizado ahora";
+    this.resolvedGeminiModel = null;
     return conn;
   }
 
   resetDemo() {
     this.state = createInitialData();
+    this.resolvedGeminiModel = null;
     return this.getBootstrapData("SOPORTE IOT / TÓTEM");
   }
 }
