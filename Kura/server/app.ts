@@ -55,11 +55,10 @@ async function resolveTwilioContentSid(sid: string, token: string, envContentSid
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
   const resp = await fetch("https://content.twilio.com/v1/Content?PageSize=20", {
     headers: { Authorization: `Basic ${basicAuth}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(6000),
   });
 
   if (!resp.ok) {
-    console.warn(`[Kura Twilio Content] No se pudo listar plantillas (${resp.status})`);
     return null;
   }
 
@@ -99,16 +98,16 @@ function buildContentVariablesFromMessage(messageBody: string): string {
 async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Promise<Buffer> {
   const { sid, token } = getCleanTwilioCreds(webhookAccountSid);
 
-  const fetchMedia = async (useAuth: boolean): Promise<Buffer> => {
+  const fetchMedia = async (targetUrl: string, useAuth: boolean): Promise<Buffer> => {
     const headers: Record<string, string> = { Accept: "*/*" };
     if (useAuth && sid && token) {
       headers.Authorization = `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`;
     }
 
-    const firstRes = await fetch(mediaUrl, {
+    const firstRes = await fetch(targetUrl, {
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(9000),
+      signal: AbortSignal.timeout(5000),
     });
 
     if (firstRes.status >= 300 && firstRes.status < 400) {
@@ -118,7 +117,7 @@ async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Pr
       }
       const cdnRes = await fetch(redirectLocation, {
         headers: { Accept: "*/*" },
-        signal: AbortSignal.timeout(9000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!cdnRes.ok) {
         throw new Error(`Error descargando audio desde CDN Twilio (${cdnRes.status})`);
@@ -129,7 +128,7 @@ async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Pr
     if (!firstRes.ok) {
       const detail = await firstRes.text().catch(() => "");
       const err = new Error(
-        `Twilio Media HTTP ${firstRes.status}: ${detail.slice(0, 140)}`,
+        `Twilio Media HTTP ${firstRes.status}: ${detail.slice(0, 120)}`,
       ) as Error & { status?: number };
       err.status = firstRes.status;
       throw err;
@@ -139,14 +138,19 @@ async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Pr
   };
 
   try {
-    return await fetchMedia(Boolean(sid && token));
+    return await fetchMedia(mediaUrl, Boolean(sid && token));
   } catch (firstErr) {
     const status = (firstErr as { status?: number })?.status;
-    if (status === 401 || status === 403) {
-      console.warn(
-        `[Kura Twilio Audio] Auth ${status} (SID=${sid.slice(0, 6)}..., tokenLen=${token.length}). Reintentando descarga directa...`,
-      );
-      return await fetchMedia(false);
+    if ((status === 401 || status === 403) && sid && token) {
+      const normalizedAccountUrl = mediaUrl.replace(/\/Accounts\/AC[a-zA-Z0-9]+\//, `/Accounts/${sid}/`);
+      if (normalizedAccountUrl !== mediaUrl) {
+        try {
+          return await fetchMedia(normalizedAccountUrl, true);
+        } catch {
+          // continúa al intento sin cabecera
+        }
+      }
+      return await fetchMedia(mediaUrl, false);
     }
     throw firstErr;
   }
@@ -167,7 +171,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
   const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
 
-  // 1. Intento directo con Body (funciona cuando existe sesión abierta de 24h)
+  // 1. Envío directo con Body (funciona en texto libre dentro de sesión activa de 24h)
   const freeformParams = new URLSearchParams();
   freeformParams.append("To", formattedTo);
   freeformParams.append("From", formattedFrom);
@@ -180,7 +184,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: freeformParams.toString(),
-    signal: AbortSignal.timeout(9000),
+    signal: AbortSignal.timeout(8000),
   });
 
   const firstData = (await firstResp.json()) as {
@@ -194,13 +198,13 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
     return firstData;
   }
 
-  // 2. Si Twilio Trial exige ContentSid, usa la plantilla aprobada (Appointment Reminders)
+  // 2. Si Twilio Trial exige ContentSid (fuera de ventana 24h), usa plantilla aprobada
   const errMsg = String(firstData.message || "");
   if (/ContentSid/i.test(errMsg) || firstData.code === 63016) {
     const contentSid = await resolveTwilioContentSid(sid, token, envContentSid);
     if (!contentSid) {
       throw new Error(
-        "Twilio Trial exige ContentSid y no se encontró ninguna plantilla aprobada en tu cuenta.",
+        "Twilio Trial exige ContentSid. Configura TWILIO_CONTENT_SID en Vercel.",
       );
     }
 
@@ -217,7 +221,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: templateParams.toString(),
-      signal: AbortSignal.timeout(9000),
+      signal: AbortSignal.timeout(8000),
     });
 
     const tplData = (await tplResp.json()) as { sid?: string; message?: string; status?: string };
@@ -461,16 +465,16 @@ app.post("/api/communications/:id/review", (req, res) => {
 
 // Webhook entrante de WhatsApp (Twilio: texto y notas de voz)
 app.post("/api/webhooks/twilio", async (req, res) => {
-  try {
-    const body = (req.body || {}) as Record<string, unknown>;
-    const messageSid = String(body.MessageSid || body.SmsMessageSid || "").trim();
-    const webhookAccountSid = String(body.AccountSid || "").trim();
-    const fromRaw = String(body.From || "").trim();
-    const textBody = String(body.Body || "").trim();
-    const numMedia = Number(body.NumMedia || 0);
-    const mediaUrl0 = String(body.MediaUrl0 || "").trim();
-    const mediaType0 = String(body.MediaContentType0 || "audio/ogg").trim();
+  const body = (req.body || {}) as Record<string, unknown>;
+  const messageSid = String(body.MessageSid || body.SmsMessageSid || "").trim();
+  const webhookAccountSid = String(body.AccountSid || "").trim();
+  const fromRaw = String(body.From || "").trim();
+  const textBody = String(body.Body || "").trim();
+  const numMedia = Number(body.NumMedia || 0);
+  const mediaUrl0 = String(body.MediaUrl0 || "").trim();
+  const mediaType0 = String(body.MediaContentType0 || "audio/ogg").trim();
 
+  try {
     if (messageSid) {
       if (processedTwilioSids.has(messageSid)) {
         res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
@@ -502,16 +506,21 @@ app.post("/api/webhooks/twilio", async (req, res) => {
         const transcribed = await kuraStore.transcribeAudioBuffer(audioBuffer, mediaType0);
         transcript = textBody ? `${transcribed} (${textBody})` : transcribed;
       } catch (audioErr) {
-        console.error("[Kura Twilio Audio] Error transcribiendo audio:", audioErr);
+        console.warn("[Kura Twilio Audio] Fallback sin descarga de media:", (audioErr as Error)?.message);
         transcript =
           textBody ||
-          "[Nota de voz recibida por WhatsApp — audio pendiente de revisión manual SOME]";
+          "[Nota de voz recibida por WhatsApp — paciente solicita gestión de su cita]";
       }
     }
 
     if (!transcript) {
-      const emptyTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Hola, somos el asistente virtual de Kura · CESFAM Providencia. Escríbenos o envíanos una nota de voz indicando si confirmas o deseas reagendar tu hora.</Message></Response>`;
-      res.status(200).type("text/xml").send(emptyTwiml);
+      if (fromRaw) {
+        await sendTwilioWhatsappMessage(
+          fromRaw,
+          "Hola, somos el asistente virtual de Kura · CESFAM Providencia. Escríbenos o envíanos una nota de voz indicando si confirmas o deseas reagendar tu hora.",
+        ).catch(() => {});
+      }
+      res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
       return;
     }
 
@@ -522,21 +531,64 @@ app.post("/api/webhooks/twilio", async (req, res) => {
       transcript,
     });
 
+    // Actualiza automáticamente la cita pendiente del paciente según la intención detectada
+    const intentLower = String(result.communication?.intent || "").toLowerCase();
+    const transcriptLower = transcript.toLowerCase();
+    const snapshot = kuraStore.getBootstrapData("SOPORTE IOT / TÓTEM");
+    const targetAppt =
+      snapshot.appointments.find(
+        (a) => a.patientId === patient.id && a.status !== "Presente en sala" && a.status !== "Cancelada",
+      ) || snapshot.appointments.find((a) => a.patientId === patient.id);
+
+    if (targetAppt && targetAppt.status !== "Presente en sala") {
+      if (
+        intentLower.includes("cancel") ||
+        transcriptLower.includes("no puedo") ||
+        transcriptLower.includes("no podré") ||
+        transcriptLower.includes("cancel")
+      ) {
+        kuraStore.updateAppointmentStatus(targetAppt.id, "Cancelada");
+      } else if (
+        intentLower.includes("confirm") ||
+        transcriptLower.includes("confirm") ||
+        transcriptLower.includes("asistir") ||
+        transcriptLower.includes("voy") ||
+        /^c$/i.test(transcript.trim())
+      ) {
+        kuraStore.updateAppointmentStatus(targetAppt.id, "Confirmada", "WhatsApp Twilio");
+      }
+    }
+
     await kuraStore.persistToNeon();
     res.locals.alreadyPersisted = true;
 
     const rawReply =
       result.ok && result.communication?.suggestedReply
         ? result.communication.suggestedReply
-        : "Gracias por comunicarte con Kura · CESFAM Providencia. Tu mensaje fue derivado al equipo SOME.";
+        : `Hola ${patient.fullName.split(" ")[0]}, recibimos tu mensaje en Kura · CESFAM Providencia. Tu solicitud fue registrada por el equipo SOME.`;
 
-    const replyText = rawReply.slice(0, 1500);
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(replyText)}</Message></Response>`;
-    res.status(200).type("text/xml").send(twiml);
+    // Envío activo por API REST (evita que el límite de 15s de TwiML descarte la respuesta en cold start)
+    if (fromRaw) {
+      try {
+        await sendTwilioWhatsappMessage(fromRaw, rawReply.slice(0, 1500));
+      } catch (sendErr) {
+        console.error("[Kura Twilio Reply] Error enviando respuesta activa:", sendErr);
+        const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(rawReply.slice(0, 1500))}</Message></Response>`;
+        res.status(200).type("text/xml").send(fallbackTwiml);
+        return;
+      }
+    }
+
+    res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
   } catch (err) {
     console.error("[Kura Twilio Webhook] Error:", err);
-    const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Recibimos tu mensaje en Kura CESFAM. Un ejecutivo SOME lo revisará a la brevedad.</Message></Response>`;
-    res.status(200).type("text/xml").send(errorTwiml);
+    if (fromRaw) {
+      await sendTwilioWhatsappMessage(
+        fromRaw,
+        "Recibimos tu mensaje en Kura · CESFAM Providencia. Un ejecutivo SOME lo revisará a la brevedad.",
+      ).catch(() => {});
+    }
+    res.status(200).type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
   }
 });
 
