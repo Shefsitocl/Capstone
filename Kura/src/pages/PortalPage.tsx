@@ -1573,7 +1573,7 @@ function Communications({
   const [analyzing, setAnalyzing] = useState(false);
 
   // Estado para envío directo real de WhatsApp (Twilio)
-  const [outboundPhone, setOutboundPhone] = useState("+56 9 5030 9670");
+  const [outboundPhone, setOutboundPhone] = useState("+56 9 xxxx xxxx");
   const [outboundMessage, setOutboundMessage] = useState(
     "Hola, te escribimos desde CESFAM Providencia (Kura) para confirmar tu atención dental de hoy.",
   );
@@ -1864,7 +1864,7 @@ function Communications({
               style={{ width: "100%" }}
               value={outboundPhone}
               onChange={(e) => setOutboundPhone(e.target.value)}
-              placeholder="+56 9 5030 9670"
+              placeholder="+56 9 1234 5678"
               required
             />
           </div>

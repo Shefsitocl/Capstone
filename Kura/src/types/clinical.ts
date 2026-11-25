@@ -1,3 +1,4 @@
+//types/clinical.ts
 export type StaffRole =
   | "ADMINISTRACIÓN SOME"
   | "ODONTOLOGÍA / BOX"
