@@ -121,6 +121,18 @@ export interface ParsedChileanId {
   registryAuthority: string;
 }
 
+function getChileTimeString(includeSeconds = false): string {
+  return new Date()
+    .toLocaleTimeString("es-CL", {
+      hour: "2-digit",
+      minute: "2-digit",
+      ...(includeSeconds ? { second: "2-digit" } : {}),
+      hour12: false,
+      timeZone: "America/Santiago",
+    })
+    .replace(/^24:/, "00:");
+}
+
 export function normalizeRutDigits(raw: string): string {
   return raw.replace(/[^0-9kK]/g, "").toUpperCase();
 }
@@ -140,6 +152,7 @@ export function validateRutModulo11(raw: string): boolean {
   const body = clean.slice(0, -1);
   const dv = clean.slice(-1);
   if (!/^\d+$/.test(body)) return false;
+
   let sum = 0;
   let multiplier = 2;
   for (let i = body.length - 1; i >= 0; i--) {
@@ -154,6 +167,7 @@ export function validateRutModulo11(raw: string): boolean {
 export function parseChileanIdQR(rawPayload: string): ParsedChileanId {
   const trimmed = rawPayload.trim();
   const isSidivUrl = /registrocivil\.cl/i.test(trimmed);
+
   let extractedRut = "";
   const urlRunMatch = trimmed.match(/RUN=([0-9]{6,8}-?[0-9kK])/i);
   if (urlRunMatch) {
@@ -162,11 +176,14 @@ export function parseChileanIdQR(rawPayload: string): ParsedChileanId {
     const plainMatch = trimmed.match(/([0-9]{1,2}\.?[0-9]{3}\.?[0-9]{3}-?[0-9kK])/);
     extractedRut = plainMatch ? plainMatch[1] : trimmed;
   }
+
   const typeMatch = trimmed.match(/type=([A-Z0-9_]+)/i);
   const serialMatch = trimmed.match(/serial=([0-9A-Z]+)/i);
+
   const rutDigits = normalizeRutDigits(extractedRut);
   const rutFormatted = formatChileanRut(extractedRut);
   const isValidMod11 = validateRutModulo11(extractedRut);
+
   return {
     rutDigits,
     rutFormatted,
@@ -184,9 +201,11 @@ export function computeNspRiskScore(
 ): { riskScore: number; riskReasons: string[] } {
   const reasons: string[] = [];
   let logit = -1.55;
+
   const nspRatio =
     patient.totalAppointments > 0 ? patient.nspHistoryCount / patient.totalAppointments : 0.15;
   const pct = Math.round(nspRatio * 100);
+
   if (patient.totalAppointments === 0) {
     reasons.push("Paciente nuevo sin historial previo");
   } else if (pct >= 30) {
@@ -199,24 +218,29 @@ export function computeNspRiskScore(
     logit -= 0.55;
     reasons.push("0% NSP histórico (adherente)");
   }
+
   if (patient.distanceKm >= 3.5) {
     logit += 0.25 * (patient.distanceKm - 1.5);
     reasons.push(`Distancia territorial ${patient.distanceKm.toFixed(1)} km`);
   }
+
   if (patient.preferentialLaw) {
     logit -= 0.22;
     reasons.push("Ley Preferente 20.584");
   }
+
   if (patient.age >= 70 && !hasMobilityOrWorkBarrier) {
     logit -= 0.2;
     reasons.push(`Adulto mayor (${patient.age} años)`);
   } else if (patient.age < 30) {
     logit += 0.28;
   }
+
   if (hasMobilityOrWorkBarrier) {
     logit += 1.25;
     reasons.push("Barrera reportada en canal omnicanal");
   }
+
   if (appointment.status === "Presente en sala") {
     logit -= 2.35;
     reasons.push("Acreditado presencialmente");
@@ -227,6 +251,7 @@ export function computeNspRiskScore(
     logit += 0.45;
     reasons.push("Pendiente confirmación T-24h");
   }
+
   const probability = 1 / (1 + Math.exp(-logit));
   const riskScore = Math.round(Math.max(5, Math.min(96, probability * 100)));
   return { riskScore, riskReasons: reasons.slice(0, 3) };
@@ -241,6 +266,7 @@ function createInitialData() {
     { id: 5, email: "martin.riquelme@cesfam.cl", password: "cesfam2026", fullName: "Martín Riquelme", rut: "20.145.890-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Telemetría ESP32", active: true, lastLoginAt: "Hoy, 08:15" },
     { id: 6, email: "alonso.sanchez@cesfam.cl", password: "cesfam2026", fullName: "Alonso Sánchez", rut: "20.489.312-8", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Redes CESFAM", active: true, lastLoginAt: "Hoy, 08:18" },
     { id: 7, email: "nicole.moreno@cesfam.cl", password: "cesfam2026", fullName: "Nicole Moreno", rut: "20.763.419-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte Tótem SOME & Acreditación", active: true, lastLoginAt: "Hoy, 08:20" },
+  { id: 8, email: "lucas.calquin@cesfam.cl", password: "cesfam2026", fullName: "Lucas Calquín", rut: "18.123.456-7", role: "SOPORTE IOT / TÓTEM", unit: "Soporte Iot", active: true, lastLoginAt: "Nunca" },
   ];
 
   const patients: Patient[] = [
@@ -398,11 +424,9 @@ export class KuraStore {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
-
       const res = await this.pgPool.query<{ payload: ReturnType<typeof createInitialData> }>(
         `SELECT payload FROM kura_pilot_state WHERE id = 'default' LIMIT 1`,
       );
-
       if (res.rows.length > 0 && res.rows[0].payload) {
         this.state = {
           ...createInitialData(),
@@ -426,7 +450,6 @@ export class KuraStore {
          ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
         [JSON.stringify(this.state)],
       );
-
       for (const p of this.state.patients.slice(0, 20)) {
         await this.pgPool.query(
           `INSERT INTO kura_pacientes (id, rut, ficha_rayen, nombre_completo, edad, sector, ley_preferente, updated_at)
@@ -435,7 +458,6 @@ export class KuraStore {
           [p.id, p.rut, p.rayenFicha, p.fullName, p.age, p.sector, p.preferentialLaw],
         );
       }
-
       for (const a of this.state.appointments.slice(0, 25)) {
         await this.pgPool.query(
           `INSERT INTO kura_citas (id, paciente_id, especialidad, box, dia, hora, estado, riesgo_nsp, updated_at)
@@ -444,7 +466,6 @@ export class KuraStore {
           [a.id, a.patientId, a.specialty, a.boxNumber, a.dayLabel, a.scheduledTime, a.status, a.riskScore],
         );
       }
-
       for (const c of this.state.communications.slice(0, 25)) {
         await this.pgPool.query(
           `INSERT INTO kura_comunicaciones (id, paciente_nombre, canal, intencion, transcripcion, motor_ia, estado_revision)
@@ -470,7 +491,6 @@ export class KuraStore {
     if (this.resolvedGeminiModel) {
       return [this.resolvedGeminiModel];
     }
-
     const listResp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`,
       { signal: AbortSignal.timeout(6000) },
@@ -478,11 +498,9 @@ export class KuraStore {
     if (!listResp.ok) {
       throw new Error(`Error listando modelos Gemini (${listResp.status})`);
     }
-
     const listData = (await listResp.json()) as {
       models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
     };
-
     const validModels = (listData.models || [])
       .filter(
         (m) =>
@@ -494,7 +512,6 @@ export class KuraStore {
 
     const flashModels = validModels.filter((n) => /flash/i.test(n));
     const ordered = flashModels.length > 0 ? flashModels : validModels;
-
     if (ordered.length === 0) {
       throw new Error("No hay modelos Gemini compatibles disponibles en esta clave.");
     }
@@ -518,14 +535,12 @@ export class KuraStore {
           signal: AbortSignal.timeout(8000),
         },
       );
-
       if (!resp.ok) {
         const errBody = await resp.text();
         lastError = `${modelPath} (${resp.status}): ${errBody.slice(0, 180)}`;
         this.resolvedGeminiModel = null;
         continue;
       }
-
       const data = (await resp.json()) as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
       };
@@ -562,6 +577,7 @@ export class KuraStore {
     const presentCount = todayAppts.filter((a) => a.status === "Presente en sala").length;
     const recoveredCount = todayAppts.filter((a) => a.status === "Reasignada").length;
     const availableWaitlist = this.state.waitlist.filter((w) => w.status === "Disponible").length;
+
     const avgLatency =
       this.state.iotEvents.length > 0
         ? Math.round(this.state.iotEvents.reduce((acc, e) => acc + e.latencyMs, 0) / this.state.iotEvents.length)
@@ -569,6 +585,7 @@ export class KuraStore {
 
     const allowViewAdmin = !requesterRole || this.canViewSystemAdmin(requesterRole);
     const allowEditAdmin = this.canEditSystemAdmin(requesterRole);
+
     const visibleConnectors = allowViewAdmin
       ? this.state.connectors.map((c) => ({
           ...c,
@@ -640,8 +657,10 @@ export class KuraStore {
     if (!isValidMod11) {
       return { ok: false, error: `El RUT ${formattedRut} no supera la validación Módulo 11 de cédula chilena.` };
     }
+
     const digits = normalizeRutDigits(formattedRut);
     let patient = this.state.patients.find((p) => normalizeRutDigits(p.rut) === digits);
+
     if (!patient) {
       const nextId = this.state.patients.reduce((max, p) => Math.max(max, p.id), 0) + 1;
       patient = {
@@ -663,9 +682,11 @@ export class KuraStore {
       };
       this.state.patients.unshift(patient);
     }
+
     const apptNum = 8851 + this.state.appointments.length;
     const status = input.status || "Por confirmar";
     const risk = computeNspRiskScore(patient, { status, dayLabel: input.dayLabel || "Hoy" }, false);
+
     const newAppt: Appointment = {
       id: `RYN-2026-${apptNum}`,
       patientId: patient.id,
@@ -684,6 +705,7 @@ export class KuraStore {
       checkinLatencyMs: null,
     };
     this.state.appointments.unshift(newAppt);
+
     return { ok: true, appointment: newAppt, patient };
   }
 
@@ -691,7 +713,8 @@ export class KuraStore {
     if (modelVersion) {
       this.state.mlModelVersion = modelVersion.slice(0, 60);
     }
-    this.state.mlLastCalculatedAt = `Hoy, ${new Date().toTimeString().slice(0, 5)}`;
+    this.state.mlLastCalculatedAt = `Hoy, ${getChileTimeString()}`;
+
     for (const appt of this.state.appointments) {
       const hasBarrier = this.state.communications.some(
         (c) => c.patientId === appt.patientId && Boolean(c.rootCause),
@@ -700,6 +723,7 @@ export class KuraStore {
       appt.riskScore = riskScore;
       appt.riskReasons = riskReasons;
     }
+
     return {
       updated: this.state.appointments.length,
       modelVersion: this.state.mlModelVersion,
@@ -710,12 +734,14 @@ export class KuraStore {
   manualCheckin(appointmentId: string, source: "MANUAL_SOME_DESK" | "TOTEM_ESP32_QR" = "MANUAL_SOME_DESK", latencyMs = 45) {
     const appt = this.state.appointments.find((a) => a.id === appointmentId);
     if (!appt) return null;
-    const hhmm = new Date().toTimeString().slice(0, 5);
+
+    const hhmm = getChileTimeString();
     appt.status = "Presente en sala";
     appt.channel = source === "TOTEM_ESP32_QR" ? "Tótem QR" : "Mesón SOME (Manual)";
     appt.checkinSource = source;
     appt.checkinAt = hhmm;
     appt.checkinLatencyMs = latencyMs;
+
     const risk = computeNspRiskScore(appt.patient, appt, false);
     appt.riskScore = risk.riskScore;
     appt.riskReasons = risk.riskReasons;
@@ -731,11 +757,13 @@ export class KuraStore {
         error: `Lectura rechazada: el RUT "${parsed.rutFormatted}" no cumple el Dígito Verificador Módulo 11 de la cédula chilena.`,
       };
     }
+
     const appt = this.state.appointments.find(
       (a) => a.dayLabel === "Hoy" && normalizeRutDigits(a.patient.rut) === parsed.rutDigits,
     );
     const patient = this.state.patients.find((p) => normalizeRutDigits(p.rut) === parsed.rutDigits);
-    const nowStr = new Date().toTimeString().slice(0, 8);
+    const nowStr = getChileTimeString(true);
+
     if (appt && appt.status === "Presente en sala") {
       return {
         ok: true,
@@ -746,6 +774,7 @@ export class KuraStore {
         appointment: appt,
       };
     }
+
     const eventRecord: IotEventItem = {
       id: this.state.iotEvents.length + 1,
       deviceId: deviceId.slice(0, 40),
@@ -764,6 +793,7 @@ export class KuraStore {
       createdAt: nowStr,
     };
     this.state.iotEvents.unshift(eventRecord);
+
     if (!appt) {
       return {
         ok: false,
@@ -773,6 +803,7 @@ export class KuraStore {
         event: eventRecord,
       };
     }
+
     this.manualCheckin(appt.id, "TOTEM_ESP32_QR", measuredMs);
     return {
       ok: true,
@@ -790,6 +821,7 @@ export class KuraStore {
     if (!appt) return null;
     appt.status = status;
     if (channel) appt.channel = channel;
+
     const risk = computeNspRiskScore(appt.patient, appt, false);
     appt.riskScore = risk.riskScore;
     appt.riskReasons = risk.riskReasons;
@@ -799,21 +831,27 @@ export class KuraStore {
   executeSlotFilling(appointmentId: string, waitlistId?: number) {
     const appt = this.state.appointments.find((a) => a.id === appointmentId);
     if (!appt) return { ok: false, error: "Cita no encontrada." };
+
     const candidate = waitlistId
       ? this.state.waitlist.find((w) => w.id === waitlistId && w.status === "Disponible")
       : this.state.waitlist.find((w) => w.status === "Disponible");
+
     if (!candidate) {
       return { ok: false, error: "No hay pacientes disponibles en la lista de espera priorizada." };
     }
+
     candidate.status = "Asignado";
     candidate.assignedAppointmentId = appt.id;
+
     appt.patientId = candidate.patientId;
     appt.patient = candidate.patient;
     appt.status = "Reasignada";
     appt.channel = "Slot-Filling Exprés";
+
     const risk = computeNspRiskScore(appt.patient, appt, false);
     appt.riskScore = risk.riskScore;
     appt.riskReasons = ["Cupo recuperado vía lista de espera", ...risk.riskReasons.slice(0, 2)];
+
     return { ok: true, appointment: appt, waitlistEntry: candidate };
   }
 
@@ -896,7 +934,6 @@ export class KuraStore {
     let aiEngine = "Motor NLP Clínico Local";
 
     const geminiKey = this.getGeminiApiKey();
-
     if (geminiKey) {
       try {
         const prompt = `Eres el asistente de IA clínica omnicanal Kura de un CESFAM en Chile. Analiza este mensaje de un paciente (${patient.fullName}, edad ${patient.age} años, Ley Preferente 20.584: ${patient.preferentialLaw ? "Sí" : "No"}) y responde ÚNICAMENTE un JSON válido sin markdown con las claves:
@@ -911,7 +948,6 @@ Mensaje del paciente: "${text}"`;
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
         });
-
         const rawJson = rawResponse.replace(/```json|```/g, "").trim();
         const parsed = JSON.parse(rawJson) as {
           intent?: string;
@@ -919,7 +955,6 @@ Mensaje del paciente: "${text}"`;
           vulnerabilityAlert?: boolean;
           suggestedReply?: string;
         };
-
         if (parsed.intent) intent = parsed.intent;
         rootCause = parsed.rootCause ?? null;
         vulnerabilityAlert = Boolean(parsed.vulnerabilityAlert);
@@ -932,16 +967,13 @@ Mensaje del paciente: "${text}"`;
 
     if (aiEngine === "Motor NLP Clínico Local") {
       const lower = text.toLowerCase();
-
       const hasNegation =
         /\bno\s+(puedo|podr[eé]|asistir[eé]|ir[eé]|voy|alcanzo|llego)(?=$|\s|[.,;!?])/.test(lower) ||
         /(cancela|suspender|imposible ir|no me es posible)/.test(lower);
-
       const hasMobilityOrHealthBarrier =
         /(dolor|rodilla|caminar|locomoci|movilidad|auto|lleve|llevar|transporte|pasaje|micro|metro|acompañ|enferm|hospital|urgencia|fiebre|reposo)/.test(
           lower,
         );
-
       const wantsReschedule =
         /(reagend|cambiar|mover|turno|trabajo|otro d[ií]a|otra hora|m[aá]s tarde|postergar)/.test(lower);
 
@@ -992,7 +1024,7 @@ Mensaje del paciente: "${text}"`;
       patientName: patient.fullName,
       patientRut: patient.rut,
       channel: input.channel,
-      timeLabel: new Date().toTimeString().slice(0, 5),
+      timeLabel: getChileTimeString(),
       intent,
       transcript: text,
       rootCause,
@@ -1001,8 +1033,8 @@ Mensaje del paciente: "${text}"`;
       vulnerabilityAlert,
       reviewStatus: intent === "Confirma asistencia" ? "Revisado" : "Pendiente",
     };
-
     this.state.communications.unshift(newComm);
+
     return { ok: true, communication: newComm, appointmentUpdated: appt || null };
   }
 
