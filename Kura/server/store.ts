@@ -654,11 +654,13 @@ export class KuraStore {
           (m) =>
             m.name &&
             m.supportedGenerationMethods?.includes("generateContent") &&
-            !/image|tts|robotics|computer-use|deep-research|live|embedding|aqa/i.test(m.name),
+            !/image|tts|robotics|computer-use|deep-research|live|embedding|aqa|1\.0|1\.5|2\.0|2\.5/i.test(m.name),
         )
-        .map((m) => m.name!);
+        .map((m) => m.name!)
+        .reverse();
+
       const flashFirst = valid.filter((n) => /flash/i.test(n));
-      return (flashFirst.length > 0 ? flashFirst : valid).slice(0, 4);
+      return (flashFirst.length > 0 ? flashFirst : valid).slice(0, 6);
     } catch {
       return [];
     }
@@ -671,13 +673,14 @@ export class KuraStore {
     const primaryCandidates = this.resolvedGeminiModel
       ? [this.resolvedGeminiModel]
       : [
+          "models/gemini-3.5-flash-preview",
           "models/gemini-3.5-flash",
+          "models/gemini-3-flash-preview",
+          "models/gemini-3.5-flash-lite-preview",
           "models/gemini-3.5-flash-lite",
-          "models/gemini-3-flash",
-          "models/gemini-flash-latest",
         ];
 
-    let lastError = "Sin respuesta de Gemini";
+    const errors: string[] = [];
     const tried = new Set<string>();
 
     const tryModelList = async (models: string[]) => {
@@ -693,7 +696,7 @@ export class KuraStore {
           );
 
           if (resp.status < 200 || resp.status >= 300) {
-            lastError = `${modelPath} (${resp.status}): ${resp.body.slice(0, 180)}`;
+            errors.push(`${modelPath} (${resp.status}): ${resp.body.slice(0, 140)}`);
             this.resolvedGeminiModel = null;
             continue;
           }
@@ -713,7 +716,7 @@ export class KuraStore {
             };
           }
         } catch (err) {
-          lastError = `${modelPath}: ${err instanceof Error ? err.message : String(err)}`;
+          errors.push(`${modelPath}: ${err instanceof Error ? err.message : String(err)}`);
           this.resolvedGeminiModel = null;
         }
       }
@@ -727,7 +730,7 @@ export class KuraStore {
     const secondPass = await tryModelList(discovered);
     if (secondPass) return secondPass;
 
-    throw new Error(lastError);
+    throw new Error(errors.join(" | ") || "Sin modelos Gemini compatibles disponibles");
   }
 
   canViewSystemAdmin(role: string): boolean {
@@ -1128,7 +1131,7 @@ export class KuraStore {
     const geminiKey = this.getGeminiApiKey();
     if (geminiKey) {
       try {
-        const prompt = `Eres el asistente de IA clínica omnicanal Kura de un CESFAM en Chile. Analiza este mensaje de un paciente (${patient.fullName}, edad ${patient.age} años, Ley Preferente 20.584: ${patient.preferentialLaw ? "Sí" : "No"}) y responde ÚNICAMENTE un JSON válido sin markdown con las claves:
+        const prompt = `Eres el asistente de IA clínica omnicanal Kura de un CESFAM en Chile. Analiza este mensaje de un paciente (${patient.fullName}, edad ${patient.age} años, Ley Preferente 20.584: ${patient.preferentialLaw ? "Sí" : "No"}) y responde ÚNICAMENTE un JSON válido sin bloques de código markdown con las claves:
 - "intent": uno exacto entre ["Confirma asistencia", "Cancela por movilidad", "Solicita reagendar", "Consulta administrativa"]
 - "rootCause": string breve explicando la barrera si cancela o reagenda (ej. "Barrera de movilidad / transporte", "Incompatibilidad horaria laboral") o null si confirma
 - "vulnerabilityAlert": boolean (true si es adulto mayor >= 65 o Ley Preferente y reporta dolor, dificultad de movilidad o falta de acompañante)
@@ -1138,7 +1141,7 @@ Mensaje del paciente: "${text}"`;
 
         const { text: rawResponse, modelLabel } = await this.callGeminiGenerate(geminiKey, {
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
+          generationConfig: { temperature: 0.1 },
         });
 
         const jsonMatch = rawResponse.replace(/```json|```/g, "").trim().match(/\{[\s\S]*\}/);
