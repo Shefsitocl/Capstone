@@ -156,6 +156,52 @@ async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Pr
   }
 }
 
+function isOutside24hWindowError(code: unknown, message?: unknown): boolean {
+  if (Number(code) === 63016) return true;
+  const text = String(message || "");
+  return /63016|ContentSid|outside the allowed window|24[\s-]?hour/i.test(text);
+}
+
+function formatWhatsAppAddress(raw: string): string {
+  const withoutPrefix = raw.trim().replace(/^whatsapp:/i, "");
+  const cleanDigits = withoutPrefix.replace(/[^\d+]/g, "");
+  const normalized = cleanDigits.startsWith("+") ? cleanDigits : `+${cleanDigits}`;
+  return `whatsapp:${normalized}`;
+}
+
+async function checkTwilioMessageDelivery(
+  sid: string,
+  basicAuth: string,
+  messageSid: string,
+): Promise<{ status?: string; error_code?: number | null; error_message?: string | null } | null> {
+  const statusUrl = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages/${messageSid}.json`;
+  const delaysMs = [1200, 1200];
+
+  for (const ms of delaysMs) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+
+    const resp = await fetch(statusUrl, {
+      headers: { Authorization: `Basic ${basicAuth}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!resp.ok) return null;
+
+    const data = (await resp.json()) as {
+      status?: string;
+      error_code?: number | null;
+      error_message?: string | null;
+    };
+
+    const st = String(data.status || "").toLowerCase();
+    if (st === "failed" || st === "undelivered" || st === "sent" || st === "delivered" || st === "read") {
+      return data;
+    }
+  }
+
+  return null;
+}
+
 async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
   const { sid, token, fromRaw, envContentSid } = getCleanTwilioCreds();
 
@@ -163,14 +209,12 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
     throw new Error("Credenciales de Twilio no configuradas en el servidor.");
   }
 
-  const cleanDigits = toPhone.replace(/[^\d+]/g, "");
-  const formattedTo = toPhone.startsWith("whatsapp:")
-    ? toPhone
-    : `whatsapp:${cleanDigits.startsWith("+") ? cleanDigits : `+${cleanDigits}`}`;
-  const formattedFrom = fromRaw.startsWith("whatsapp:") ? fromRaw : `whatsapp:${fromRaw}`;
+  const formattedTo = formatWhatsAppAddress(toPhone);
+  const formattedFrom = formatWhatsAppAddress(fromRaw);
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
   const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
 
+  // 1) PRIMER INTENTO: Texto libre en español (sin ContentSid)
   const freeformParams = new URLSearchParams();
   freeformParams.append("To", formattedTo);
   freeformParams.append("From", formattedFrom);
@@ -191,45 +235,83 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
     message?: string;
     status?: string;
     code?: number;
+    error_code?: number | null;
+    error_message?: string | null;
   };
 
-  if (firstResp.ok) {
-    return firstData;
+  let needsTemplateFallback = false;
+
+  if (!firstResp.ok) {
+    if (isOutside24hWindowError(firstData.code ?? firstData.error_code, firstData.message)) {
+      needsTemplateFallback = true;
+    } else {
+      throw new Error(firstData.message || `Error Twilio API (${firstResp.status})`);
+    }
+  } else if (firstData.sid) {
+    // Verifica rechazo asíncrono (Twilio acepta como "queued" y falla con 63016 ~1s después)
+    const delivery = await checkTwilioMessageDelivery(sid, basicAuth, firstData.sid);
+    const deliveryStatus = String(delivery?.status || "").toLowerCase();
+
+    if (deliveryStatus === "failed" || deliveryStatus === "undelivered") {
+      if (isOutside24hWindowError(delivery?.error_code, delivery?.error_message)) {
+        needsTemplateFallback = true;
+      } else {
+        const errCode = delivery?.error_code ?? "sin código";
+        const errDetail = delivery?.error_message || "No entregado por WhatsApp.";
+        throw new Error(`Twilio rechazó el mensaje (${errCode}): ${errDetail}`);
+      }
+    } else {
+      return {
+        ...firstData,
+        status: delivery?.status || firstData.status,
+        deliveryMode: "freeform_es" as const,
+        usedFallbackTemplate: false,
+      };
+    }
   }
 
-  const errMsg = String(firstData.message || "");
-  if (/ContentSid/i.test(errMsg) || firstData.code === 63016) {
-    const contentSid = await resolveTwilioContentSid(sid, token, envContentSid);
-    if (!contentSid) {
-      throw new Error(
-        "Twilio Trial exige ContentSid. Configura TWILIO_CONTENT_SID en Vercel.",
-      );
-    }
-
-    const templateParams = new URLSearchParams();
-    templateParams.append("To", formattedTo);
-    templateParams.append("From", formattedFrom);
-    templateParams.append("ContentSid", contentSid);
-    templateParams.append("ContentVariables", buildContentVariablesFromMessage(messageBody));
-
-    const tplResp = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: templateParams.toString(),
-      signal: AbortSignal.timeout(8000),
-    });
-
-    const tplData = (await tplResp.json()) as { sid?: string; message?: string; status?: string };
-    if (!tplResp.ok) {
-      throw new Error(tplData.message || `Error Twilio Content Template (${tplResp.status})`);
-    }
-    return tplData;
+  if (!needsTemplateFallback) {
+    return {
+      ...firstData,
+      deliveryMode: "freeform_es" as const,
+      usedFallbackTemplate: false,
+    };
   }
 
-  throw new Error(errMsg || `Error Twilio API (${firstResp.status})`);
+  // 2) RESPALDO: Solo si la ventana de 24h está cerrada (error 63016)
+  const contentSid = await resolveTwilioContentSid(sid, token, envContentSid);
+  if (!contentSid) {
+    throw new Error(
+      "La ventana de 24 horas de WhatsApp está cerrada (63016) y no hay TWILIO_CONTENT_SID configurado en Vercel.",
+    );
+  }
+
+  const templateParams = new URLSearchParams();
+  templateParams.append("To", formattedTo);
+  templateParams.append("From", formattedFrom);
+  templateParams.append("ContentSid", contentSid);
+  templateParams.append("ContentVariables", buildContentVariablesFromMessage(messageBody));
+
+  const tplResp = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: templateParams.toString(),
+    signal: AbortSignal.timeout(8000),
+  });
+
+  const tplData = (await tplResp.json()) as { sid?: string; message?: string; status?: string };
+  if (!tplResp.ok) {
+    throw new Error(tplData.message || `Error Twilio Content Template (${tplResp.status})`);
+  }
+
+  return {
+    ...tplData,
+    deliveryMode: "template_fallback" as const,
+    usedFallbackTemplate: true,
+  };
 }
 
 app.use("/api", async (req, res, next) => {
@@ -581,7 +663,13 @@ app.post("/api/whatsapp/send", async (req, res) => {
       return;
     }
     const sent = await sendTwilioWhatsappMessage(phone, text);
-    res.json({ ok: true, sid: sent.sid, status: sent.status });
+    res.json({
+      ok: true,
+      sid: sent.sid,
+      status: sent.status,
+      deliveryMode: sent.deliveryMode,
+      usedFallbackTemplate: sent.usedFallbackTemplate,
+    });
   } catch (err) {
     res.status(500).json({
       ok: false,
