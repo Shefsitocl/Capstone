@@ -134,10 +134,40 @@ const VALID_INTENTS = [
   "Consulta administrativa",
 ] as const;
 
+function getJsonIpv4(urlStr: string, timeoutMs = 5000): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const req = https.request(
+      {
+        hostname: url.hostname,
+        port: 443,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        family: 4,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode || 500,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timeout IPv4 GET tras ${timeoutMs}ms`));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 function postJsonIpv4(
   urlStr: string,
   bodyObj: unknown,
-  timeoutMs = 7000,
+  timeoutMs = 12000,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const url = new URL(urlStr);
@@ -168,13 +198,10 @@ function postJsonIpv4(
     );
 
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timeout IPv4 tras ${timeoutMs}ms conectando a ${url.hostname}`));
+      req.destroy(new Error(`Timeout IPv4 POST tras ${timeoutMs}ms conectando a ${url.hostname}`));
     });
 
-    req.on("error", (err) => {
-      reject(err);
-    });
-
+    req.on("error", reject);
     req.write(payload);
     req.end();
   });
@@ -612,69 +639,93 @@ export class KuraStore {
     return (process.env.GEMINI_API_KEY || "").replace(/^["']|["']$/g, "").trim();
   }
 
-  private getCandidateGeminiModels(): string[] {
-    if (this.resolvedGeminiModel) {
-      return [this.resolvedGeminiModel];
+  private async discoverGeminiModelsIpv4(geminiKey: string): Promise<string[]> {
+    try {
+      const listResp = await getJsonIpv4(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`,
+        5000,
+      );
+      if (listResp.status < 200 || listResp.status >= 300) return [];
+      const parsed = JSON.parse(listResp.body) as {
+        models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+      };
+      const valid = (parsed.models || [])
+        .filter(
+          (m) =>
+            m.name &&
+            m.supportedGenerationMethods?.includes("generateContent") &&
+            !/image|tts|robotics|computer-use|deep-research|live|embedding|aqa/i.test(m.name),
+        )
+        .map((m) => m.name!);
+      const flashFirst = valid.filter((n) => /flash/i.test(n));
+      return (flashFirst.length > 0 ? flashFirst : valid).slice(0, 4);
+    } catch {
+      return [];
     }
-    return [
-      "models/gemini-2.5-flash",
-      "models/gemini-2.0-flash",
-      "models/gemini-2.5-flash-lite",
-    ];
   }
 
   private async callGeminiGenerate(
     geminiKey: string,
     payload: Record<string, unknown>,
   ): Promise<{ text: string; modelLabel: string }> {
-    const candidates = this.getCandidateGeminiModels();
+    const primaryCandidates = this.resolvedGeminiModel
+      ? [this.resolvedGeminiModel]
+      : [
+          "models/gemini-3.5-flash",
+          "models/gemini-3.5-flash-lite",
+          "models/gemini-3-flash",
+          "models/gemini-flash-latest",
+        ];
+
     let lastError = "Sin respuesta de Gemini";
+    const tried = new Set<string>();
 
-    for (const modelPath of candidates) {
-      const requestPayload: Record<string, unknown> = { ...payload };
-      const baseGenConfig =
-        requestPayload.generationConfig && typeof requestPayload.generationConfig === "object"
-          ? { ...(requestPayload.generationConfig as Record<string, unknown>) }
-          : {};
+    const tryModelList = async (models: string[]) => {
+      for (const modelPath of models) {
+        if (tried.has(modelPath)) continue;
+        tried.add(modelPath);
 
-      if (modelPath.includes("2.5")) {
-        baseGenConfig.thinkingConfig = { thinkingBudget: 0 };
-      }
-      requestPayload.generationConfig = baseGenConfig;
+        try {
+          const resp = await postJsonIpv4(
+            `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+            payload,
+            12000,
+          );
 
-      try {
-        const resp = await postJsonIpv4(
-          `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-          requestPayload,
-          7000,
-        );
-
-        if (resp.status < 200 || resp.status >= 300) {
-          lastError = `${modelPath} (${resp.status}): ${resp.body.slice(0, 180)}`;
-          this.resolvedGeminiModel = null;
-          continue;
-        }
-
-        const data = JSON.parse(resp.body) as {
-          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-        };
-        const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-        if (text) {
-          if (this.resolvedGeminiModel !== modelPath) {
-            this.resolvedGeminiModel = modelPath;
-            console.log(`[Kura IA] Modelo Gemini activo (IPv4): ${modelPath}`);
+          if (resp.status < 200 || resp.status >= 300) {
+            lastError = `${modelPath} (${resp.status}): ${resp.body.slice(0, 180)}`;
+            this.resolvedGeminiModel = null;
+            continue;
           }
-          return {
-            text,
-            modelLabel: modelPath.replace(/^models\//, ""),
+
+          const data = JSON.parse(resp.body) as {
+            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
           };
+          const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+          if (text) {
+            if (this.resolvedGeminiModel !== modelPath) {
+              this.resolvedGeminiModel = modelPath;
+              console.log(`[Kura IA] Modelo Gemini activo (IPv4): ${modelPath}`);
+            }
+            return {
+              text,
+              modelLabel: modelPath.replace(/^models\//, ""),
+            };
+          }
+        } catch (err) {
+          lastError = `${modelPath}: ${err instanceof Error ? err.message : String(err)}`;
+          this.resolvedGeminiModel = null;
         }
-      } catch (err) {
-        lastError = `${modelPath}: ${err instanceof Error ? err.message : String(err)}`;
-        this.resolvedGeminiModel = null;
-        continue;
       }
-    }
+      return null;
+    };
+
+    const firstPass = await tryModelList(primaryCandidates);
+    if (firstPass) return firstPass;
+
+    const discovered = await this.discoverGeminiModelsIpv4(geminiKey);
+    const secondPass = await tryModelList(discovered);
+    if (secondPass) return secondPass;
 
     throw new Error(lastError);
   }
@@ -715,7 +766,7 @@ export class KuraStore {
     const hasGemini = Boolean(this.getGeminiApiKey());
     const activeModelText = this.resolvedGeminiModel
       ? `Google ${this.resolvedGeminiModel.replace(/^models\//, "")} (Texto + Voz)`
-      : "Google Gemini 2.5 Flash (Texto + Voz)";
+      : "Google Gemini 3.5 Flash (Texto + Voz)";
 
     return {
       dbMode: this.pgPool ? "Neon PostgreSQL Conectado" : "Simulador Local + Datos Reales",
