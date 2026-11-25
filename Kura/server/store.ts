@@ -1,4 +1,10 @@
+import dns from "dns";
+import https from "https";
 import pg from "pg";
+
+if (typeof dns.setDefaultResultOrder === "function") {
+  dns.setDefaultResultOrder("ipv4first");
+}
 
 export type StaffRole =
   | "ADMINISTRACIÓN SOME"
@@ -127,6 +133,52 @@ const VALID_INTENTS = [
   "Solicita reagendar",
   "Consulta administrativa",
 ] as const;
+
+function postJsonIpv4(
+  urlStr: string,
+  bodyObj: unknown,
+  timeoutMs = 7000,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const payload = JSON.stringify(bodyObj);
+
+    const req = https.request(
+      {
+        hostname: url.hostname,
+        port: 443,
+        path: `${url.pathname}${url.search}`,
+        method: "POST",
+        family: 4,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode || 500,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timeout IPv4 tras ${timeoutMs}ms conectando a ${url.hostname}`));
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
 
 function getChileTimeString(includeSeconds = false): string {
   try {
@@ -485,7 +537,6 @@ export class KuraStore {
           staffUsers: [...savedStaff, ...missingStaff],
         };
 
-        // Sincroniza GEMINI_API_KEY de Vercel si el conector en Neon estaba vacío o enmascarado
         const envGeminiKey = (process.env.GEMINI_API_KEY || "").replace(/^["']|["']$/g, "").trim();
         const voiceConn = this.state.connectors.find((c) => c.id === "voice_ai");
         if (voiceConn && envGeminiKey && (!voiceConn.authToken || voiceConn.authToken.includes("•"))) {
@@ -567,8 +618,8 @@ export class KuraStore {
     }
     return [
       "models/gemini-2.5-flash",
-      "models/gemini-2.5-flash-lite",
       "models/gemini-2.0-flash",
+      "models/gemini-2.5-flash-lite",
     ];
   }
 
@@ -591,36 +642,37 @@ export class KuraStore {
       }
       requestPayload.generationConfig = baseGenConfig;
 
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestPayload),
-          signal: AbortSignal.timeout(14000),
-        },
-      );
+      try {
+        const resp = await postJsonIpv4(
+          `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+          requestPayload,
+          7000,
+        );
 
-      if (!resp.ok) {
-        const errBody = await resp.text();
-        lastError = `${modelPath} (${resp.status}): ${errBody.slice(0, 180)}`;
+        if (resp.status < 200 || resp.status >= 300) {
+          lastError = `${modelPath} (${resp.status}): ${resp.body.slice(0, 180)}`;
+          this.resolvedGeminiModel = null;
+          continue;
+        }
+
+        const data = JSON.parse(resp.body) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        };
+        const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+        if (text) {
+          if (this.resolvedGeminiModel !== modelPath) {
+            this.resolvedGeminiModel = modelPath;
+            console.log(`[Kura IA] Modelo Gemini activo (IPv4): ${modelPath}`);
+          }
+          return {
+            text,
+            modelLabel: modelPath.replace(/^models\//, ""),
+          };
+        }
+      } catch (err) {
+        lastError = `${modelPath}: ${err instanceof Error ? err.message : String(err)}`;
         this.resolvedGeminiModel = null;
         continue;
-      }
-
-      const data = (await resp.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-      if (text) {
-        if (this.resolvedGeminiModel !== modelPath) {
-          this.resolvedGeminiModel = modelPath;
-          console.log(`[Kura IA] Modelo Gemini activo: ${modelPath}`);
-        }
-        return {
-          text,
-          modelLabel: modelPath.replace(/^models\//, ""),
-        };
       }
     }
 
