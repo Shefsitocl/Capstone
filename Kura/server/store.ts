@@ -266,7 +266,7 @@ function createInitialData() {
     { id: 5, email: "martin.riquelme@cesfam.cl", password: "cesfam2026", fullName: "Martín Riquelme", rut: "20.145.890-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Telemetría ESP32", active: true, lastLoginAt: "Hoy, 08:15" },
     { id: 6, email: "alonso.sanchez@cesfam.cl", password: "cesfam2026", fullName: "Alonso Sánchez", rut: "20.489.312-8", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT & Redes CESFAM", active: true, lastLoginAt: "Hoy, 08:18" },
     { id: 7, email: "nicole.moreno@cesfam.cl", password: "cesfam2026", fullName: "Nicole Moreno", rut: "20.763.419-0", role: "SOPORTE IOT / TÓTEM", unit: "Soporte Tótem SOME & Acreditación", active: true, lastLoginAt: "Hoy, 08:20" },
-  { id: 8, email: "lucas.calquin@cesfam.cl", password: "cesfam2026", fullName: "Lucas Calquín", rut: "18.123.456-7", role: "SOPORTE IOT / TÓTEM", unit: "Soporte Iot", active: true, lastLoginAt: "Nunca" },
+    { id: 8, email: "lucas.calquin@cesfam.cl", password: "cesfam2026", fullName: "Lucas Calquín", rut: "18.123.456-7", role: "SOPORTE IOT / TÓTEM", unit: "Soporte IoT", active: true, lastLoginAt: "Nunca" },
   ];
 
   const patients: Patient[] = [
@@ -428,10 +428,21 @@ export class KuraStore {
         `SELECT payload FROM kura_pilot_state WHERE id = 'default' LIMIT 1`,
       );
       if (res.rows.length > 0 && res.rows[0].payload) {
+        const defaultData = createInitialData();
+        const savedPayload = res.rows[0].payload;
+        const savedStaff = savedPayload.staffUsers || [];
+        const savedEmails = new Set(savedStaff.map((u) => u.email.toLowerCase()));
+        const missingStaff = defaultData.staffUsers.filter((u) => !savedEmails.has(u.email.toLowerCase()));
+
         this.state = {
-          ...createInitialData(),
-          ...res.rows[0].payload,
+          ...defaultData,
+          ...savedPayload,
+          staffUsers: [...savedStaff, ...missingStaff],
         };
+
+        if (missingStaff.length > 0) {
+          await this.persistToNeon();
+        }
       } else {
         await this.persistToNeon();
       }
