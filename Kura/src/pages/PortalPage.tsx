@@ -6,7 +6,7 @@ import { Link, useLocation } from "wouter";
 import {
   Activity, AlertTriangle, ArrowUpRight, Bot, CalendarDays, Camera, CheckCircle2,
   ChevronRight, CircleCheck, ClipboardCheck, Clock3, Cpu, Eye, FileText,
-  Headphones, KeyRound, LayoutDashboard, Lock, LogOut, MessagesSquare,
+  Headphones, LayoutDashboard, Lock, LogOut, MessagesSquare,
   MoreHorizontal, Phone, PlugZap, Plus, QrCode, Radio, RefreshCw,
   ScanLine, Search, Send, Settings2, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Sparkles, UserCheck, UserPlus, UsersRound, X, Zap,
@@ -78,6 +78,21 @@ const DENTAL_SPECIALISTS: DentalSpecialist[] = [
   },
 ];
 
+function normalizeChileanPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 9 && digits.startsWith("9")) {
+    return `+56 9 ${digits.slice(1, 5)} ${digits.slice(5)}`;
+  }
+  if (digits.length === 11 && digits.startsWith("569")) {
+    return `+56 9 ${digits.slice(3, 7)} ${digits.slice(7)}`;
+  }
+  if (digits.length >= 8) {
+    const cleaned = raw.trim();
+    return cleaned.startsWith("+") ? cleaned : `+${digits}`;
+  }
+  return "+56 9 8000 0000";
+}
+
 function getSpecialistsForSpecialty(specialty: string): DentalSpecialist[] {
   const matches = DENTAL_SPECIALISTS.filter((doc) => doc.specialties.includes(specialty));
   return matches.length > 0 ? matches : DENTAL_SPECIALISTS;
@@ -106,8 +121,8 @@ function getWeeklyDays(): { value: string; label: string }[] {
 function getBlocksForSpecialty(specialty: string): { value: string; label: string; duration: number }[] {
   const duration = SPECIALTY_BLOCK_MINUTES[specialty] ?? 30;
   const blocks: { value: string; label: string; duration: number }[] = [];
-  const startMin = 8 * 60; // 08:00
-  const endMin = 17 * 60;  // 17:00
+  const startMin = 8 * 60;
+  const endMin = 17 * 60;
   for (let m = startMin; m + duration <= endMin; m += duration) {
     const h1 = String(Math.floor(m / 60)).padStart(2, "0");
     const min1 = String(m % 60).padStart(2, "0");
@@ -170,11 +185,9 @@ function getClinicalWindowBadge(
   refMinutes: number,
 ): { label: string; bg: string; color: string; border: string } | null {
   if (appt.dayLabel !== "Hoy" || appt.status === "Cancelada") return null;
-
   const start = parseStartMinutes(appt.scheduledTime);
   const end = parseEndMinutes(appt.scheduledTime, SPECIALTY_BLOCK_MINUTES[appt.specialty] ?? 30);
   const diff = refMinutes - start;
-
   if (appt.status === "Presente en sala") {
     if (refMinutes >= start && refMinutes <= end) {
       return { label: "En box ahora", bg: "#DCFCE7", color: "#166534", border: "#86EFAC" };
@@ -184,7 +197,6 @@ function getClinicalWindowBadge(
     }
     return { label: "En sala · Esperando llamado", bg: "#EFF6FF", color: "#1D4ED8", border: "#BFDBFE" };
   }
-
   if (diff < -30) {
     return { label: "Programada", bg: "#F8FAFC", color: "#64748B", border: "#E2E8F0" };
   }
@@ -257,7 +269,7 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
 
   const notify = (msg: string) => {
     setStatusMessage(msg);
-    setTimeout(() => setStatusMessage((prev) => (prev === msg ? "" : prev)), 5500);
+    setTimeout(() => setStatusMessage((prev) => (prev === msg ? "" : prev)), 6500);
   };
 
   const fetchBootstrap = useCallback(async () => {
@@ -279,6 +291,32 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
   useEffect(() => {
     fetchBootstrap();
   }, [fetchBootstrap]);
+
+  const sendRealWhatsapp = useCallback(
+    async (toPhone: string, message: string, recipientLabel: string): Promise<boolean> => {
+      try {
+        const res = await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: toPhone, message }),
+        });
+        const body = await res.json();
+        if (res.ok && body.ok) {
+          notify(`WhatsApp real enviado vía Twilio a ${recipientLabel} (${toPhone}).`);
+          return true;
+        }
+        const detail = String(body.error || "Error Twilio");
+        notify(
+          `No se pudo enviar a ${toPhone}: ${detail}. En modo Sandbox, el número debe enviar primero «join twilio-trial» al +1 737 250 8034.`,
+        );
+        return false;
+      } catch {
+        notify(`Error de red intentando enviar WhatsApp a ${toPhone}.`);
+        return false;
+      }
+    },
+    [],
+  );
 
   const handleManualCheckin = async (appt: Appointment) => {
     const res = await fetch(`/api/appointments/${appt.id}/checkin`, { method: "POST" });
@@ -322,7 +360,7 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
   const appointments = [...(data?.appointments || [])].sort(compareAppointmentsChronological);
   const filteredAppointments = appointments.filter((item) => {
     const matchesDay = dayFilter === "Todos" || item.dayLabel === dayFilter;
-    const matchesQuery = `${item.patient.fullName} ${item.patient.rut} ${item.patient.rayenFicha} ${item.specialty} ${item.boxNumber} ${item.professionalName} ${item.id}`
+    const matchesQuery = `${item.patient.fullName} ${item.patient.rut} ${item.patient.phone} ${item.patient.rayenFicha} ${item.specialty} ${item.boxNumber} ${item.professionalName} ${item.id}`
       .toLowerCase()
       .includes(query.toLowerCase());
     const matchesFilter = filter === "Todos" || item.status === filter;
@@ -444,6 +482,7 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
                   onConfirm={handleConfirmAppt}
                   onCancel={handleCancelAppt}
                   onSlotFill={handleSlotFill}
+                  onSendWhatsapp={sendRealWhatsapp}
                   onRefresh={fetchBootstrap}
                   notify={notify}
                 />
@@ -464,10 +503,9 @@ export default function PortalPage({ user, onLogout }: PortalPageProps) {
                   appointments={appointments}
                   aiConnected={Boolean(data?.aiConnected)}
                   aiEngineName={data?.aiEngineName || "Motor NLP Clínico Local"}
-                  canEditSystemAdmin={canEditSystemAdmin}
-                  authHeaders={authHeaders}
                   query={query}
                   setQuery={setQuery}
+                  onSendWhatsapp={sendRealWhatsapp}
                   onRefresh={fetchBootstrap}
                   notify={notify}
                 />
@@ -543,7 +581,6 @@ function Overview({
   const todayAppts = [...data.appointments]
     .filter((a) => a.dayLabel === "Hoy")
     .sort(compareAppointmentsChronological);
-
   return (
     <>
       <div className="stats-grid">
@@ -577,7 +614,7 @@ function Overview({
                     )}
                   </div>
                   <div className="subtext">
-                    {item.specialty} · {item.boxNumber} · Ficha {item.patient.rayenFicha}
+                    {item.specialty} · {item.boxNumber} · {item.patient.phone}
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -605,7 +642,7 @@ function Overview({
           <div className="quick-list">
             <Link className="quick-item quick-link" href="/appointments">
               <span className="quick-icon"><UserPlus /></span>
-              <span><b>Ingresar Paciente / RUT Real</b><small>Validación RUT Módulo 11 en agenda.</small></span>
+              <span><b>Ingresar Paciente / WhatsApp Real</b><small>Validación RUT Módulo 11 y teléfono en agenda.</small></span>
               <ChevronRight className="quick-arrow" />
             </Link>
             <Link className="quick-item quick-link" href="/kiosk">
@@ -615,7 +652,7 @@ function Overview({
             </Link>
             <Link className="quick-item quick-link" href="/communications">
               <span className="quick-icon"><Bot /></span>
-              <span><b>Comunicaciones Omnicanal IA</b><small>Procesa mensajes y actualiza citas.</small></span>
+              <span><b>Comunicaciones Omnicanal IA</b><small>WhatsApp real (Twilio) + Gemini 3 Flash.</small></span>
               <ChevronRight className="quick-arrow" />
             </Link>
           </div>
@@ -668,7 +705,7 @@ function Stat({ label, value, meta, icon }: { label: string; value: string; meta
 function Appointments({
   appointments, allAppointments, query, setQuery, filter, setFilter, dayFilter, setDayFilter,
   waitlist, showWaitlist, setShowWaitlist, onCheckin, onConfirm, onCancel, onSlotFill,
-  onRefresh, notify,
+  onSendWhatsapp, onRefresh, notify,
 }: {
   appointments: Appointment[];
   allAppointments: Appointment[];
@@ -685,6 +722,7 @@ function Appointments({
   onConfirm: (a: Appointment) => void;
   onCancel: (a: Appointment) => void;
   onSlotFill: (a: Appointment, waitlistId?: number) => void;
+  onSendWhatsapp: (toPhone: string, message: string, recipientLabel: string) => Promise<boolean>;
   onRefresh: () => Promise<void>;
   notify: (m: string) => void;
 }) {
@@ -692,6 +730,7 @@ function Appointments({
   const [showAddForm, setShowAddForm] = useState(false);
   const [fullName, setFullName] = useState("");
   const [rut, setRut] = useState("");
+  const [phone, setPhone] = useState("+56 9 ");
   const [age, setAge] = useState("34");
   const [sector, setSector] = useState("Sector Azul");
   const [distanceKm, setDistanceKm] = useState("2.4");
@@ -705,6 +744,7 @@ function Appointments({
   const [scheduledTime, setScheduledTime] = useState("08:00 - 08:30");
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [sendingApptWaId, setSendingApptWaId] = useState<string | null>(null);
   const [boxFilter, setBoxFilter] = useState("Todos");
   const [groupByBox, setGroupByBox] = useState(true);
   const [useRealClock, setUseRealClock] = useState(false);
@@ -724,7 +764,7 @@ function Appointments({
     return () => window.clearInterval(id);
   }, [useRealClock]);
 
-  const activeClinicalMinutes = useRealClock ? nowMinutes : 9 * 60 + 15; // 09:15 hrs en modo demo
+  const activeClinicalMinutes = useRealClock ? nowMinutes : 9 * 60 + 15;
   const formattedClinicalClock = `${String(Math.floor(activeClinicalMinutes / 60)).padStart(2, "0")}:${String(
     activeClinicalMinutes % 60,
   ).padStart(2, "0")} hrs`;
@@ -749,18 +789,15 @@ function Appointments({
           a.dayLabel === targetDay &&
           (a.boxNumber === spec.boxNumber || a.professionalName === spec.name),
       );
-
       return rawBlocks.map((block) => {
         const bStart = parseStartMinutes(block.value);
         const bEnd = parseEndMinutes(block.value, block.duration);
-
         const activeConflict = dayAppts.find((a) => {
           if (a.status === "Cancelada") return false;
           const aStart = parseStartMinutes(a.scheduledTime);
           const aEnd = parseEndMinutes(a.scheduledTime, SPECIALTY_BLOCK_MINUTES[a.specialty] ?? 30);
           return intervalsOverlap(bStart, bEnd, aStart, aEnd);
         });
-
         const cancelledSlot = !activeConflict
           ? dayAppts.find((a) => {
               if (a.status !== "Cancelada") return false;
@@ -769,7 +806,6 @@ function Appointments({
               return intervalsOverlap(bStart, bEnd, aStart, aEnd);
             })
           : undefined;
-
         return {
           ...block,
           occupied: Boolean(activeConflict),
@@ -786,7 +822,6 @@ function Appointments({
     [evaluateBlocksForSpecialist, selectedSpecialist, dayLabel],
   );
 
-  // Sincroniza automáticamente el primer bloque libre si el bloque actual queda ocupado al crear una cita real o cambiar filtros
   useEffect(() => {
     const currentSlot = blocksWithAvailability.find((b) => b.value === scheduledTime);
     if (!currentSlot || currentSlot.occupied) {
@@ -798,22 +833,18 @@ function Appointments({
   }, [blocksWithAvailability, scheduledTime]);
 
   const hasAnyFreeBlock = blocksWithAvailability.some((b) => !b.occupied);
-
   const boxOptions = Array.from(new Set(appointments.map((a) => a.boxNumber))).sort((a, b) =>
     a.localeCompare(b, "es"),
   );
-
   const boxFilteredAppointments = appointments.filter(
     (a) => boxFilter === "Todos" || a.boxNumber === boxFilter,
   );
-
   const groupedBoxes = boxOptions
     .map((box) => ({
       box,
       items: boxFilteredAppointments.filter((a) => a.boxNumber === box),
     }))
     .filter((g) => g.items.length > 0);
-
   const cancelledAppt =
     boxFilteredAppointments.find((a) => a.status === "Cancelada") ||
     appointments.find((a) => a.status === "Cancelada");
@@ -838,7 +869,6 @@ function Appointments({
   const handleCreateReal = async (e: FormEvent) => {
     e.preventDefault();
     setFormError("");
-
     const selectedSlot = blocksWithAvailability.find((b) => b.value === scheduledTime);
     if (!selectedSlot || selectedSlot.occupied) {
       setFormError(
@@ -846,7 +876,7 @@ function Appointments({
       );
       return;
     }
-
+    const cleanPhone = normalizeChileanPhone(phone);
     setSaving(true);
     try {
       const res = await fetch("/api/appointments", {
@@ -855,6 +885,7 @@ function Appointments({
         body: JSON.stringify({
           fullName,
           rut,
+          phone: cleanPhone,
           age: Number(age),
           sector,
           distanceKm: Number(distanceKm),
@@ -874,15 +905,27 @@ function Appointments({
         setFormError(body.error || "No se pudo registrar el paciente.");
       } else {
         notify(
-          `Paciente real agregado con ${selectedSpecialist.name} (${selectedSpecialist.boxNumber}) a las ${scheduledTime} · Riesgo: ${body.appointment.riskScore}%.`,
+          `Paciente real agregado con ${selectedSpecialist.name} (${selectedSpecialist.boxNumber}) · Teléfono ${cleanPhone} · Riesgo: ${body.appointment.riskScore}%.`,
         );
         setFullName("");
         setRut("");
+        setPhone("+56 9 ");
         setShowAddForm(false);
         await onRefresh();
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSendAppointmentReminder = async (item: Appointment) => {
+    setSendingApptWaId(item.id);
+    try {
+      const firstName = item.patient.fullName.split(" ")[0];
+      const msg = `Hola ${firstName}, te recordamos tu hora de ${item.specialty} en CESFAM Providencia (${item.boxNumber} con ${item.professionalName}) para ${item.dayLabel} en el bloque ${item.scheduledTime} hrs. Responde CONFIRMO o REAGENDAR.`;
+      await onSendWhatsapp(item.patient.phone, msg, item.patient.fullName);
+    } finally {
+      setSendingApptWaId(null);
     }
   };
 
@@ -899,7 +942,7 @@ function Appointments({
             )}
           </div>
           <div className="subtext">
-            {item.dayLabel} · RUT {item.patient.rut} · {item.patient.rayenFicha}
+            {item.dayLabel} · RUT {item.patient.rut} · {item.patient.phone}
             {item.patient.preferentialLaw && " · ★ Ley Preferente"}
           </div>
         </td>
@@ -945,6 +988,18 @@ function Appointments({
                 onClick={() => onCheckin(item)}
               >
                 <UserCheck size={13} /> Confirmar llegada
+              </button>
+            )}
+            {item.status !== "Cancelada" && item.patient.phone && (
+              <button
+                type="button"
+                className="button tiny"
+                style={{ borderColor: "#16A34A", color: "#15803D" }}
+                disabled={sendingApptWaId === item.id}
+                onClick={() => handleSendAppointmentReminder(item)}
+                title={`Enviar recordatorio WhatsApp real a ${item.patient.phone}`}
+              >
+                <Send size={12} /> {sendingApptWaId === item.id ? "Enviando..." : "WhatsApp"}
               </button>
             )}
             {item.status === "Por confirmar" && (
@@ -1013,7 +1068,7 @@ function Appointments({
         {showAddForm && (
           <form onSubmit={handleCreateReal} className="card card-pad" style={{ background: "#F4F8F9", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: "#163A50" }}>
-              Ingresar Paciente y Cita Real (Validación RUT Módulo 11)
+              Ingresar Paciente y Cita Real (Validación RUT Módulo 11 + WhatsApp)
             </div>
             <div className="three-col" style={{ marginBottom: 8 }}>
               <div className="field">
@@ -1039,6 +1094,19 @@ function Appointments({
                 />
               </div>
               <div className="field">
+                <label>Teléfono WhatsApp *</label>
+                <input
+                  className="control"
+                  style={{ width: "100%" }}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="+56 9 5030 9670"
+                  required
+                />
+              </div>
+            </div>
+            <div className="three-col" style={{ marginBottom: 8 }}>
+              <div className="field">
                 <label>Edad</label>
                 <input
                   type="number"
@@ -1050,9 +1118,6 @@ function Appointments({
                   onChange={(e) => setAge(e.target.value)}
                 />
               </div>
-            </div>
-
-            <div className="three-col" style={{ marginBottom: 8 }}>
               <div className="field">
                 <label>Sector Territorial</label>
                 <select className="control" style={{ width: "100%" }} value={sector} onChange={(e) => setSector(e.target.value)}>
@@ -1062,29 +1127,28 @@ function Appointments({
                 </select>
               </div>
               <div className="field">
-                <label>Distancia al CESFAM (km)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min={0.1}
-                  max={50}
-                  className="control"
-                  style={{ width: "100%" }}
-                  value={distanceKm}
-                  onChange={(e) => setDistanceKm(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Tramo FONASA</label>
-                <select className="control" style={{ width: "100%" }} value={fonasaTramo} onChange={(e) => setFonasaTramo(e.target.value)}>
-                  <option value="A">FONASA A</option>
-                  <option value="B">FONASA B</option>
-                  <option value="C">FONASA C</option>
-                  <option value="D">FONASA D</option>
-                </select>
+                <label>Distancia (km) / FONASA</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={0.1}
+                    max={50}
+                    className="control"
+                    style={{ width: "50%" }}
+                    value={distanceKm}
+                    onChange={(e) => setDistanceKm(e.target.value)}
+                    title="Distancia al CESFAM (km)"
+                  />
+                  <select className="control" style={{ width: "50%" }} value={fonasaTramo} onChange={(e) => setFonasaTramo(e.target.value)}>
+                    <option value="A">FONASA A</option>
+                    <option value="B">FONASA B</option>
+                    <option value="C">FONASA C</option>
+                    <option value="D">FONASA D</option>
+                  </select>
+                </div>
               </div>
             </div>
-
             <div className="three-col" style={{ marginBottom: 8 }}>
               <div className="field">
                 <label>Especialidad Odontológica ({currentDuration} min)</label>
@@ -1112,7 +1176,6 @@ function Appointments({
                   </optgroup>
                 </select>
               </div>
-
               <div className="field">
                 <label>Dentista / Especialista ({selectedSpecialist.boxNumber})</label>
                 <select
@@ -1131,7 +1194,6 @@ function Appointments({
                   })}
                 </select>
               </div>
-
               <div className="field">
                 <label>Día de atención</label>
                 <select
@@ -1148,7 +1210,6 @@ function Appointments({
                 </select>
               </div>
             </div>
-
             <div className="three-col" style={{ marginBottom: 10 }}>
               <div className="field" style={{ gridColumn: "span 2" }}>
                 <label>Bloque Horario (Actualización automática de cupos ocupados)</label>
@@ -1169,7 +1230,6 @@ function Appointments({
                   ))}
                 </select>
               </div>
-
               <div className="field">
                 <label>Citas totales / NSP previas</label>
                 <div style={{ display: "flex", gap: 6 }}>
@@ -1196,7 +1256,6 @@ function Appointments({
                 </div>
               </div>
             </div>
-
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#334155", cursor: "pointer" }}>
                 <input type="checkbox" checked={preferentialLaw} onChange={(e) => setPreferentialLaw(e.target.checked)} />
@@ -1225,7 +1284,7 @@ function Appointments({
               className="control"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar paciente, RUT, dentista o box..."
+              placeholder="Buscar paciente, RUT, teléfono, dentista o box..."
             />
           </div>
           <select className="control" value={filter} onChange={(e) => setFilter(e.target.value)}>
@@ -1260,7 +1319,6 @@ function Appointments({
             {groupByBox ? "Vista unificada" : "Separar por Box"}
           </button>
         </div>
-
         {groupByBox ? (
           <div style={{ display: "grid", gap: 16 }}>
             {groupedBoxes.map((group) => (
@@ -1315,7 +1373,6 @@ function Appointments({
           </div>
         )}
       </section>
-
       <section className="card card-pad">
         <div className="section-title">
           <div>
@@ -1481,17 +1538,16 @@ function Risk({
 }
 
 function Communications({
-  items, patients, appointments, aiConnected, aiEngineName, canEditSystemAdmin, authHeaders, query, setQuery, onRefresh, notify,
+  items, patients, appointments, aiConnected, aiEngineName, query, setQuery, onSendWhatsapp, onRefresh, notify,
 }: {
   items: CommunicationItem[];
   patients: Patient[];
   appointments: Appointment[];
   aiConnected: boolean;
   aiEngineName: string;
-  canEditSystemAdmin: boolean;
-  authHeaders: () => Record<string, string>;
   query: string;
   setQuery: (v: string) => void;
+  onSendWhatsapp: (toPhone: string, message: string, recipientLabel: string) => Promise<boolean>;
   onRefresh: () => Promise<void>;
   notify: (m: string) => void;
 }) {
@@ -1500,9 +1556,14 @@ function Communications({
   const [channel, setChannel] = useState("WhatsApp Texto");
   const [messageText, setMessageText] = useState("Hola, confirmo que asistiré hoy a mi hora dental sin problemas.");
   const [analyzing, setAnalyzing] = useState(false);
-  const [showKeyBox, setShowKeyBox] = useState(false);
-  const [geminiKey, setGeminiKey] = useState("");
-  const [savingKey, setSavingKey] = useState(false);
+
+  // Estado para envío directo real de WhatsApp (Twilio)
+  const [outboundPhone, setOutboundPhone] = useState("+56 9 5030 9670");
+  const [outboundMessage, setOutboundMessage] = useState(
+    "Hola, te escribimos desde CESFAM Providencia (Kura) para confirmar tu atención dental de hoy.",
+  );
+  const [sendingDirect, setSendingDirect] = useState(false);
+  const [sendingCardId, setSendingCardId] = useState<number | null>(null);
 
   const findActiveApptForPatient = useCallback(
     (patientId: number) =>
@@ -1556,7 +1617,6 @@ function Communications({
         const intentLower = String(body.communication?.intent || "").toLowerCase();
         const textLower = rawText.toLowerCase();
         const targetAppt = findActiveApptForPatient(patientIdNum);
-
         let agendaActionNote = "";
         if (targetAppt) {
           if (targetAppt.status === "Presente en sala") {
@@ -1581,7 +1641,6 @@ function Communications({
             agendaActionNote = ` · Cita ${targetAppt.scheduledTime} pasó a «Confirmada».`;
           }
         }
-
         notify(
           `IA (${body.communication.aiEngine}) clasificó: «${body.communication.intent}»${agendaActionNote}`,
         );
@@ -1595,29 +1654,15 @@ function Communications({
     }
   };
 
-  const handleSaveGeminiKey = async (e: FormEvent) => {
+  const handleDirectOutboundSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setSavingKey(true);
+    if (!outboundPhone.trim() || !outboundMessage.trim()) return;
+    setSendingDirect(true);
     try {
-      const res = await fetch("/api/connectors/voice_ai", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          authToken: geminiKey.trim(),
-          status: geminiKey.trim().startsWith("AIza") ? "Conectado" : "En pruebas",
-        }),
-      });
-      if (res.ok) {
-        setShowKeyBox(false);
-        setGeminiKey("");
-        notify("API Key de Google Gemini guardada por Soporte TI.");
-        await onRefresh();
-      } else {
-        const err = await res.json();
-        notify(err.error || "No tienes permisos para modificar API Keys.");
-      }
+      const normalized = normalizeChileanPhone(outboundPhone);
+      await onSendWhatsapp(normalized, outboundMessage.trim(), normalized);
     } finally {
-      setSavingKey(false);
+      setSendingDirect(false);
     }
   };
 
@@ -1626,6 +1671,20 @@ function Communications({
     if (res.ok) {
       notify("Interacción marcada como revisada por equipo SOME.");
       await onRefresh();
+    }
+  };
+
+  const handleSendCardReply = async (item: CommunicationItem, patientPhone: string) => {
+    if (!item.suggestedReply) return;
+    setSendingCardId(item.id);
+    try {
+      const ok = await onSendWhatsapp(patientPhone, item.suggestedReply, item.patientName);
+      if (ok && item.reviewStatus !== "Revisado") {
+        await fetch(`/api/communications/${item.id}/review`, { method: "POST" });
+        await onRefresh();
+      }
+    } finally {
+      setSendingCardId(null);
     }
   };
 
@@ -1656,7 +1715,7 @@ function Communications({
                 const appt = findActiveApptForPatient(p.id);
                 return (
                   <option key={p.id} value={p.id}>
-                    {p.fullName} ({p.rut}){appt ? ` · [${appt.status}]` : ""} {p.isRealUserAdded ? "★" : ""}
+                    {p.fullName} ({p.phone}){appt ? ` · [${appt.status}]` : ""} {p.isRealUserAdded ? "★" : ""}
                   </option>
                 );
               })}
@@ -1699,40 +1758,55 @@ function Communications({
           </select>
         </div>
         <div className="quick-list">
-          {visible.map((item) => (
-            <article className="quick-item message-card" key={item.id}>
-              <span className="quick-icon">
-                {item.channel.includes("Voz") ? <Headphones /> : item.channel.includes("Llamada") ? <Phone /> : <MessagesSquare />}
-              </span>
-              <div className="message-card-content">
-                <div className="message-card-head">
-                  <b>{item.patientName} · {item.channel}</b>
-                  <span style={{ fontSize: 11, color: "#64748B" }}>{item.timeLabel}</span>
-                  <Badge>{item.reviewStatus}</Badge>
-                </div>
-                <div className="subtext">
-                  Intención: <b>{item.intent}</b>
-                  {item.rootCause && ` · Causa: ${item.rootCause}`}
-                  {item.aiEngine && ` · Motor: ${item.aiEngine}`}
-                  {item.vulnerabilityAlert && " · ⚠ Alerta Ley Preferente 20.584"}
-                </div>
-                <p className="message-transcript">«{item.transcript.replace(/^«|»$/g, "")}»</p>
-                {item.suggestedReply && (
-                  <div className="inline-note" style={{ marginTop: 8, background: "#EFF6FF", borderColor: "#BFDBFE", color: "#1E40AF" }}>
-                    <Bot size={14} />
-                    <span><b>Respuesta IA sugerida:</b> {item.suggestedReply}</span>
+          {visible.map((item) => {
+            const matchedPatient = patients.find((p) => p.id === item.patientId);
+            const patientPhone = matchedPatient?.phone || "";
+            return (
+              <article className="quick-item message-card" key={item.id}>
+                <span className="quick-icon">
+                  {item.channel.includes("Voz") ? <Headphones /> : item.channel.includes("Llamada") ? <Phone /> : <MessagesSquare />}
+                </span>
+                <div className="message-card-content">
+                  <div className="message-card-head">
+                    <b>{item.patientName} · {item.channel}</b>
+                    <span style={{ fontSize: 11, color: "#64748B" }}>{item.timeLabel}</span>
+                    <Badge>{item.reviewStatus}</Badge>
                   </div>
-                )}
-                {item.reviewStatus !== "Revisado" && (
-                  <div className="message-card-actions">
-                    <button type="button" className="button tiny" onClick={() => markReviewed(item.id)}>
-                      Marcar revisado
-                    </button>
+                  <div className="subtext">
+                    Intención: <b>{item.intent}</b>
+                    {patientPhone && ` · Tel: ${patientPhone}`}
+                    {item.rootCause && ` · Causa: ${item.rootCause}`}
+                    {item.aiEngine && ` · Motor: ${item.aiEngine}`}
+                    {item.vulnerabilityAlert && " · ⚠ Alerta Ley Preferente 20.584"}
                   </div>
-                )}
-              </div>
-            </article>
-          ))}
+                  <p className="message-transcript">«{item.transcript.replace(/^«|»$/g, "")}»</p>
+                  {item.suggestedReply && (
+                    <div className="inline-note" style={{ marginTop: 8, background: "#EFF6FF", borderColor: "#BFDBFE", color: "#1E40AF" }}>
+                      <Bot size={14} />
+                      <span><b>Respuesta IA sugerida:</b> {item.suggestedReply}</span>
+                    </div>
+                  )}
+                  <div className="message-card-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                    {item.suggestedReply && patientPhone && (
+                      <button
+                        type="button"
+                        className="button tiny primary"
+                        disabled={sendingCardId === item.id}
+                        onClick={() => handleSendCardReply(item, patientPhone)}
+                      >
+                        <Send size={12} /> {sendingCardId === item.id ? "Enviando..." : "Enviar respuesta por WhatsApp"}
+                      </button>
+                    )}
+                    {item.reviewStatus !== "Revisado" && (
+                      <button type="button" className="button tiny" onClick={() => markReviewed(item.id)}>
+                        Marcar revisado
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
       <section className="card card-pad">
@@ -1743,18 +1817,71 @@ function Communications({
           <Badge>{aiConnected ? "IA Cloud Activa" : "Motor Local"}</Badge>
         </div>
         <div className="metric"><span>Motor IA Activo</span><b>{aiEngineName}</b></div>
-        <div className="metric"><span>WhatsApp Business Webhook</span><Badge>Conectado</Badge></div>
+        <div className="metric"><span>WhatsApp Twilio Sandbox</span><b>+1 737 250 8034</b></div>
         <div className="metric"><span>Voicebot IVR Adulto Mayor</span><Badge>Conectado</Badge></div>
+
+        <form onSubmit={handleDirectOutboundSubmit} className="card card-pad" style={{ background: "#F8FAFC", marginTop: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#163A50", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <Send size={13} color="#15803D" /> Enviar mensaje WhatsApp real (Twilio)
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}>
+            <label>Seleccionar paciente registrado</label>
+            <select
+              className="control"
+              style={{ width: "100%" }}
+              value=""
+              onChange={(e) => {
+                if (e.target.value) setOutboundPhone(e.target.value);
+              }}
+            >
+              <option value="">-- Elegir teléfono de paciente --</option>
+              {patients.map((p) => (
+                <option key={p.id} value={p.phone}>
+                  {p.fullName} · {p.phone} {p.isRealUserAdded ? "★" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}>
+            <label>Teléfono destino WhatsApp *</label>
+            <input
+              className="control"
+              style={{ width: "100%" }}
+              value={outboundPhone}
+              onChange={(e) => setOutboundPhone(e.target.value)}
+              placeholder="+56 9 5030 9670"
+              required
+            />
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}>
+            <label>Mensaje saliente *</label>
+            <input
+              className="control"
+              style={{ width: "100%" }}
+              value={outboundMessage}
+              onChange={(e) => setOutboundMessage(e.target.value)}
+              placeholder="Escribe el recordatorio o mensaje..."
+              required
+            />
+          </div>
+          <button type="submit" className="button tiny primary" style={{ width: "100%" }} disabled={sendingDirect}>
+            <Send size={13} /> {sendingDirect ? "Enviando por Twilio..." : "Enviar WhatsApp Real"}
+          </button>
+          <div className="subtext" style={{ marginTop: 8 }}>
+            Para probar en vivo con otro celular: debe enviar <b>join twilio-trial</b> al <b>+1 737 250 8034</b> (habilita 72 h).
+          </div>
+        </form>
+
         <div className="inline-note" style={{ marginTop: 14 }}>
           <ShieldCheck size={15} />
           <span>
             {aiConnected
-              ? "Credenciales administradas exclusivamente en el servidor (.env). Sin exposición en interfaz web."
-              : "Motor local activo. Configure HF_TOKEN en el archivo .env del servidor para habilitar inferencia en la nube."}
+              ? "Credenciales de Gemini y Twilio administradas exclusivamente en el servidor (.env)."
+              : "Motor local activo. Configure GEMINI_API_KEY en el servidor para habilitar inferencia en la nube."}
           </span>
         </div>
       </section>
-  </div>
+    </div>
   );
 }
 
@@ -1785,7 +1912,6 @@ function Kiosk({
   const [sending, setSending] = useState(false);
   const [showWebcamFallback, setShowWebcamFallback] = useState(false);
   const [showSuccessPopup, setShowSuccessPopup] = useState(false);
-
   const realPatientToday = appointments.find((a) => a.dayLabel === "Hoy" && a.patient.isRealUserAdded);
 
   const executeScan = useCallback(async (payloadToSend: string) => {
@@ -2179,7 +2305,6 @@ function Settings({
     { title: "Transcripción IA de notas de voz", detail: "Detección automática de barreras de movilidad en adultos mayores." },
     { title: "Idempotencia y Ring Buffer en Tótem ESP32-CAM", detail: "Evita lecturas duplicadas y almacena eventos ante microcortes." },
   ];
-
   return (
     <>
       {!canEdit && (

@@ -7,8 +7,8 @@ const app = express();
 
 const allowedOrigin = process.env.CORS_ORIGIN || true;
 app.use(cors({ origin: allowedOrigin }));
-app.use(express.json({ limit: "256kb" }));
-app.use(express.urlencoded({ extended: true, limit: "256kb" }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 const processedTwilioSids = new Set<string>();
 
@@ -31,6 +31,7 @@ function getStaffRole(req: express.Request): string {
 
 function escapeXml(unsafe: string): string {
   return unsafe
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -38,45 +39,71 @@ function escapeXml(unsafe: string): string {
     .replace(/'/g, "&apos;");
 }
 
-async function downloadTwilioMedia(mediaUrl: string): Promise<Buffer> {
-  const sid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
-  const token = (process.env.TWILIO_AUTH_TOKEN || "").trim();
-  if (!sid || !token) {
-    throw new Error("Faltan TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN en las variables de entorno.");
-  }
+function getCleanTwilioCreds(fallbackSid = "") {
+  const sid = (process.env.TWILIO_ACCOUNT_SID || fallbackSid || "").replace(/[^a-zA-Z0-9]/g, "");
+  const token = (process.env.TWILIO_AUTH_TOKEN || "").replace(/[^a-zA-Z0-9]/g, "");
+  const fromRaw = (process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+17372508034").trim();
+  return { sid, token, fromRaw };
+}
 
-  const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
-  const firstRes = await fetch(mediaUrl, {
-    headers: { Authorization: `Basic ${basicAuth}` },
-    redirect: "manual",
-    signal: AbortSignal.timeout(8000),
-  });
+async function downloadTwilioMedia(mediaUrl: string, webhookAccountSid = ""): Promise<Buffer> {
+  const { sid, token } = getCleanTwilioCreds(webhookAccountSid);
 
-  if (firstRes.status >= 300 && firstRes.status < 400) {
-    const redirectLocation = firstRes.headers.get("location");
-    if (!redirectLocation) {
-      throw new Error(`Redirección sin destino desde Twilio (${firstRes.status})`);
+  const fetchMedia = async (useAuth: boolean): Promise<Buffer> => {
+    const headers: Record<string, string> = { Accept: "*/*" };
+    if (useAuth && sid && token) {
+      headers.Authorization = `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`;
     }
-    const cdnRes = await fetch(redirectLocation, {
-      signal: AbortSignal.timeout(8000),
+
+    const firstRes = await fetch(mediaUrl, {
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(9000),
     });
-    if (!cdnRes.ok) {
-      throw new Error(`Error descargando archivo desde CDN de Twilio (${cdnRes.status})`);
+
+    if (firstRes.status >= 300 && firstRes.status < 400) {
+      const redirectLocation = firstRes.headers.get("location");
+      if (!redirectLocation) {
+        throw new Error(`Redirección sin destino desde Twilio (${firstRes.status})`);
+      }
+      const cdnRes = await fetch(redirectLocation, {
+        headers: { Accept: "*/*" },
+        signal: AbortSignal.timeout(9000),
+      });
+      if (!cdnRes.ok) {
+        throw new Error(`Error descargando audio desde CDN Twilio (${cdnRes.status})`);
+      }
+      return Buffer.from(await cdnRes.arrayBuffer());
     }
-    return Buffer.from(await cdnRes.arrayBuffer());
-  }
 
-  if (!firstRes.ok) {
-    throw new Error(`Error descargando audio desde Twilio (${firstRes.status})`);
-  }
+    if (!firstRes.ok) {
+      const detail = await firstRes.text().catch(() => "");
+      const err = new Error(
+        `Twilio Media HTTP ${firstRes.status}: ${detail.slice(0, 140)}`,
+      ) as Error & { status?: number };
+      err.status = firstRes.status;
+      throw err;
+    }
 
-  return Buffer.from(await firstRes.arrayBuffer());
+    return Buffer.from(await firstRes.arrayBuffer());
+  };
+
+  try {
+    return await fetchMedia(Boolean(sid && token));
+  } catch (firstErr) {
+    const status = (firstErr as { status?: number })?.status;
+    if (status === 401 || status === 403) {
+      console.warn(
+        `[Kura Twilio Audio] Auth ${status} (SID=${sid.slice(0, 6)}..., tokenLen=${token.length}). Reintentando descarga directa...`,
+      );
+      return await fetchMedia(false);
+    }
+    throw firstErr;
+  }
 }
 
 async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
-  const sid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
-  const token = (process.env.TWILIO_AUTH_TOKEN || "").trim();
-  const fromNumber = (process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+17372508034").trim();
+  const { sid, token, fromRaw } = getCleanTwilioCreds();
 
   if (!sid || !token) {
     throw new Error("Credenciales de Twilio no configuradas en el servidor.");
@@ -86,7 +113,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
   const formattedTo = toPhone.startsWith("whatsapp:")
     ? toPhone
     : `whatsapp:${cleanDigits.startsWith("+") ? cleanDigits : `+${cleanDigits}`}`;
-  const formattedFrom = fromNumber.startsWith("whatsapp:") ? fromNumber : `whatsapp:${fromNumber}`;
+  const formattedFrom = fromRaw.startsWith("whatsapp:") ? fromRaw : `whatsapp:${fromRaw}`;
 
   const params = new URLSearchParams();
   params.append("To", formattedTo);
@@ -101,7 +128,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: params.toString(),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(9000),
   });
 
   const data = (await resp.json()) as { sid?: string; message?: string; status?: string };
@@ -117,7 +144,7 @@ app.use("/api", async (req, res, next) => {
     const originalSend = res.send.bind(res);
     let persisted = false;
     res.send = ((body?: unknown) => {
-      if (!persisted && res.statusCode < 400) {
+      if (!persisted && !res.locals.alreadyPersisted && res.statusCode < 400) {
         persisted = true;
         kuraStore
           .persistToNeon()
@@ -134,11 +161,12 @@ app.use("/api", async (req, res, next) => {
 });
 
 app.get("/api/healthz", (_req, res) => {
+  const { sid, token } = getCleanTwilioCreds();
   res.json({
     status: "ok",
     service: "Kura API",
     aiConnected: Boolean(kuraStore.getGeminiApiKey()),
-    twilioConnected: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
+    twilioConnected: Boolean(sid.length === 34 && token.length === 32),
   });
 });
 
@@ -344,6 +372,7 @@ app.post("/api/webhooks/twilio", async (req, res) => {
   try {
     const body = (req.body || {}) as Record<string, unknown>;
     const messageSid = String(body.MessageSid || body.SmsMessageSid || "").trim();
+    const webhookAccountSid = String(body.AccountSid || "").trim();
     const fromRaw = String(body.From || "").trim();
     const textBody = String(body.Body || "").trim();
     const numMedia = Number(body.NumMedia || 0);
@@ -369,18 +398,22 @@ app.post("/api/webhooks/twilio", async (req, res) => {
 
     let transcript = textBody;
     let channel = "WhatsApp Real (Twilio)";
+    const isAudio =
+      numMedia > 0 &&
+      Boolean(mediaUrl0) &&
+      (mediaType0.startsWith("audio/") || mediaType0.includes("ogg") || mediaType0.includes("opus"));
 
-    if (numMedia > 0 && mediaUrl0 && mediaType0.startsWith("audio/")) {
+    if (isAudio) {
       channel = "Nota de Voz WhatsApp";
       try {
-        const audioBuffer = await downloadTwilioMedia(mediaUrl0);
+        const audioBuffer = await downloadTwilioMedia(mediaUrl0, webhookAccountSid);
         const transcribed = await kuraStore.transcribeAudioBuffer(audioBuffer, mediaType0);
         transcript = textBody ? `${transcribed} (${textBody})` : transcribed;
       } catch (audioErr) {
         console.error("[Kura Twilio Audio] Error transcribiendo audio:", audioErr);
-        const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Recibimos tu nota de voz en Kura CESFAM, pero hubo un problema técnico al procesarla. Por favor escríbenos brevemente si confirmas o necesitas reagendar tu hora.</Message></Response>`;
-        res.status(200).type("text/xml").send(fallbackTwiml);
-        return;
+        transcript =
+          textBody ||
+          "[Nota de voz recibida por WhatsApp — audio pendiente de revisión manual SOME]";
       }
     }
 
@@ -396,6 +429,9 @@ app.post("/api/webhooks/twilio", async (req, res) => {
       channel,
       transcript,
     });
+
+    await kuraStore.persistToNeon();
+    res.locals.alreadyPersisted = true;
 
     const rawReply =
       result.ok && result.communication?.suggestedReply
