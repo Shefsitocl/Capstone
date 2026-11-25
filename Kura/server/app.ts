@@ -1,7 +1,7 @@
 //server/app.ts
 import express from "express";
 import cors from "cors";
-import { kuraStore } from "./store";
+import { kuraStore } from "./store.js";
 
 const app = express();
 
