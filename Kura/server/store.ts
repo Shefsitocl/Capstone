@@ -330,6 +330,8 @@ export class KuraStore {
   private state = createInitialData();
   private pgPool: pg.Pool | null = null;
   private resolvedGeminiModel: string | null = null;
+  private lastLoadedFromDbAt = 0;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     if (process.env.DATABASE_URL) {
@@ -341,6 +343,119 @@ export class KuraStore {
       } catch {
         this.pgPool = null;
       }
+    }
+  }
+
+  async ensureReady(): Promise<void> {
+    if (!this.pgPool) return;
+    if (Date.now() - this.lastLoadedFromDbAt < 2500) return;
+    if (!this.initPromise) {
+      this.initPromise = this.initAndLoadNeon().finally(() => {
+        this.initPromise = null;
+      });
+    }
+    await this.initPromise;
+  }
+
+  private async initAndLoadNeon(): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(`
+        CREATE TABLE IF NOT EXISTS kura_pilot_state (
+          id TEXT PRIMARY KEY,
+          payload JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS kura_pacientes (
+          id INT PRIMARY KEY,
+          rut TEXT NOT NULL,
+          ficha_rayen TEXT NOT NULL,
+          nombre_completo TEXT NOT NULL,
+          edad INT NOT NULL,
+          sector TEXT NOT NULL,
+          ley_preferente BOOLEAN NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS kura_citas (
+          id TEXT PRIMARY KEY,
+          paciente_id INT NOT NULL,
+          especialidad TEXT NOT NULL,
+          box TEXT NOT NULL,
+          dia TEXT NOT NULL,
+          hora TEXT NOT NULL,
+          estado TEXT NOT NULL,
+          riesgo_nsp INT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS kura_comunicaciones (
+          id INT PRIMARY KEY,
+          paciente_nombre TEXT NOT NULL,
+          canal TEXT NOT NULL,
+          intencion TEXT NOT NULL,
+          transcripcion TEXT NOT NULL,
+          motor_ia TEXT NOT NULL,
+          estado_revision TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      const res = await this.pgPool.query<{ payload: ReturnType<typeof createInitialData> }>(
+        `SELECT payload FROM kura_pilot_state WHERE id = 'default' LIMIT 1`,
+      );
+
+      if (res.rows.length > 0 && res.rows[0].payload) {
+        this.state = {
+          ...createInitialData(),
+          ...res.rows[0].payload,
+        };
+      } else {
+        await this.persistToNeon();
+      }
+      this.lastLoadedFromDbAt = Date.now();
+    } catch (err) {
+      console.error("[Kura Neon] Error inicializando PostgreSQL:", err);
+    }
+  }
+
+  async persistToNeon(): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(
+        `INSERT INTO kura_pilot_state (id, payload, updated_at)
+         VALUES ('default', $1::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
+        [JSON.stringify(this.state)],
+      );
+
+      for (const p of this.state.patients.slice(0, 20)) {
+        await this.pgPool.query(
+          `INSERT INTO kura_pacientes (id, rut, ficha_rayen, nombre_completo, edad, sector, ley_preferente, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+           ON CONFLICT (id) DO UPDATE SET sector = EXCLUDED.sector, ley_preferente = EXCLUDED.ley_preferente, updated_at = NOW()`,
+          [p.id, p.rut, p.rayenFicha, p.fullName, p.age, p.sector, p.preferentialLaw],
+        );
+      }
+
+      for (const a of this.state.appointments.slice(0, 25)) {
+        await this.pgPool.query(
+          `INSERT INTO kura_citas (id, paciente_id, especialidad, box, dia, hora, estado, riesgo_nsp, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+           ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, riesgo_nsp = EXCLUDED.riesgo_nsp, updated_at = NOW()`,
+          [a.id, a.patientId, a.specialty, a.boxNumber, a.dayLabel, a.scheduledTime, a.status, a.riskScore],
+        );
+      }
+
+      for (const c of this.state.communications.slice(0, 25)) {
+        await this.pgPool.query(
+          `INSERT INTO kura_comunicaciones (id, paciente_nombre, canal, intencion, transcripcion, motor_ia, estado_revision)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO UPDATE SET estado_revision = EXCLUDED.estado_revision, intencion = EXCLUDED.intencion`,
+          [c.id, c.patientName, c.channel, c.intent, c.transcript, c.aiEngine || "Motor NLP", c.reviewStatus],
+        );
+      }
+      this.lastLoadedFromDbAt = Date.now();
+    } catch (err) {
+      console.error("[Kura Neon] Error guardando en PostgreSQL:", err);
     }
   }
 
@@ -358,6 +473,7 @@ export class KuraStore {
 
     const listResp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`,
+      { signal: AbortSignal.timeout(6000) },
     );
     if (!listResp.ok) {
       throw new Error(`Error listando modelos Gemini (${listResp.status})`);
@@ -372,7 +488,7 @@ export class KuraStore {
         (m) =>
           m.name &&
           m.supportedGenerationMethods?.includes("generateContent") &&
-          !/image|tts|robotics|computer-use|deep-research/i.test(m.name),
+          !/image|tts|robotics|computer-use|deep-research|thinking/i.test(m.name),
       )
       .map((m) => m.name!);
 
@@ -382,7 +498,7 @@ export class KuraStore {
     if (ordered.length === 0) {
       throw new Error("No hay modelos Gemini compatibles disponibles en esta clave.");
     }
-    return ordered.slice(0, 4);
+    return ordered.slice(0, 3);
   }
 
   private async callGeminiGenerate(
@@ -399,6 +515,7 @@ export class KuraStore {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(8000),
         },
       );
 

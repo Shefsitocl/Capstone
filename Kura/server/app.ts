@@ -1,3 +1,4 @@
+//server/app.ts
 import express from "express";
 import cors from "cors";
 import { kuraStore } from "./store";
@@ -25,7 +26,27 @@ function getStaffRole(req: express.Request): string {
     return raw;
   }
 }
-
+app.use("/api", async (req, res, next) => {
+  await kuraStore.ensureReady();
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    const originalSend = res.send.bind(res);
+    let persisted = false;
+    res.send = ((body?: unknown) => {
+      if (!persisted && res.statusCode < 400) {
+        persisted = true;
+        kuraStore
+          .persistToNeon()
+          .catch((err) => console.error("[Kura Neon] Error al guardar:", err))
+          .finally(() => {
+            originalSend(body);
+          });
+        return res;
+      }
+      return originalSend(body);
+    }) as typeof res.send;
+  }
+  next();
+});
 app.get("/api/healthz", (_req, res) => {
   res.json({ status: "ok", service: "Kura API", aiConnected: Boolean(kuraStore.getGeminiApiKey()) });
 });
