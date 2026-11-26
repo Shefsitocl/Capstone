@@ -493,15 +493,15 @@ app.post("/api/iot/batch-sync", (req, res) => {
   res.json({ ok: true, syncedCount: results.length, results });
 });
 
-app.post("/api/ml/recalculate", (req, res) => {
+app.post("/api/ml/recalculate", async (req, res) => {
   const { modelVersion } = (req.body || {}) as { modelVersion?: string };
-  const summary = kuraStore.recalculateAllRisks(modelVersion);
+  const summary = await kuraStore.recalculateAllRisksWithModel(modelVersion);
   res.json({ ok: true, ...summary });
 });
 
-app.post("/api/ml/sync", (req, res) => {
+app.post("/api/ml/sync", async (req, res) => {
   const { modelVersion } = (req.body || {}) as { modelVersion?: string };
-  const summary = kuraStore.recalculateAllRisks(modelVersion);
+  const summary = await kuraStore.recalculateAllRisksWithModel(modelVersion);
   res.json({ ok: true, ...summary });
 });
 

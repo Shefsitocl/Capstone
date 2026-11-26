@@ -59,3 +59,7 @@ if __name__ == "__main__":
             print("Respuesta API Kura:", resp.read().decode("utf-8"))
     except Exception as err:
         print(f"No se pudo conectar a {API_URL}: {err}")
+
+for c in ["sexo","sector_territorial","canal_contacto_preferido","dia_semana","bloque_horario","especialidad","tipo_prestacion"]:
+    print(c, df_completo[c].unique())
+print(df_completo.lead_time_days.median(), df_completo.dias_desde_ultima_cita.median())

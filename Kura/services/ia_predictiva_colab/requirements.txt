@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+pandas
+xgboost==3.4.1

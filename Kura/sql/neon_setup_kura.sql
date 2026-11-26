@@ -107,3 +107,13 @@ CREATE TABLE IF NOT EXISTS iot_totem_events (
   status TEXT NOT NULL DEFAULT 'VALIDADO',
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE SCHEMA IF NOT EXISTS kura_ia_predictiva;
+CREATE TABLE IF NOT EXISTS kura_ia_predictiva.predicciones (
+  id SERIAL PRIMARY KEY,
+  cita_id TEXT NOT NULL,
+  probabilidad_nsp REAL NOT NULL,
+  nivel_riesgo TEXT NOT NULL,
+  modelo TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

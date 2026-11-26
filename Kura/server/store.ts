@@ -39,6 +39,8 @@ export interface Patient {
   chronicProgram: string | null;
   totalAppointments: number;
   nspHistoryCount: number;
+  nspConsecutive?: number;
+  daysSinceLastVisit?: number;
   isRealUserAdded?: boolean;
 }
 
@@ -55,6 +57,8 @@ export interface Appointment {
   channel: string;
   riskScore: number;
   riskReasons: string[];
+  leadTimeDays?: number;
+  serviceType?: string;
   checkinAt?: string | null;
   checkinSource?: string | null;
   checkinLatencyMs?: number | null;
@@ -468,6 +472,30 @@ function createInitialData() {
     mlModelVersion: "XGBoost-Kura-v1.3",
     mlLastCalculatedAt: "Hoy, 08:30",
   };
+}
+
+function diaSemanaCL(offsetDias: number): string {
+  const d = new Date(Date.now() + offsetDias * 864e5);
+  const w = new Intl.DateTimeFormat("es-CL", { weekday: "long", timeZone: "America/Santiago" }).format(d);
+  const dia = w.charAt(0).toUpperCase() + w.slice(1);
+  return ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"].includes(dia) ? dia : "Lunes";
+}
+
+function canalPreferido(channel: string): string {
+  return /voz|tel[eé]f|llamada/i.test(channel) ? "Llamada Telefónica" : "WhatsApp";
+}
+
+const BLOQUES = ["08:00-10:00", "10:00-12:00", "12:00-14:00", "14:00-16:00", "16:00-18:00"];
+function bloqueHorario(hora: string): string {
+  const h = Math.min(Math.max(Number(hora.split(":")[0]) || 8, 8), 17);
+  return BLOQUES[Math.floor((h - 8) / 2)];
+}
+
+function tipoPrestacion(specialty: string): string {
+  if (/endodon/i.test(specialty)) return "Endodoncia";
+  if (/periodon/i.test(specialty)) return "Periodoncia";
+  if (/control/i.test(specialty)) return "Control Odontológico";
+  return "Operatoria Dental";
 }
 
 export class KuraStore {
@@ -909,6 +937,63 @@ export class KuraStore {
     };
   }
 
+private buildMlFeatures(a: Appointment) {
+  const p = a.patient;
+  const total = p.totalAppointments;
+  return {
+    cita_id: a.id,
+    edad: p.age,
+    sexo: p.gender === "M" ? "M" : "F",
+    sector_territorial: p.sector,
+    distancia_cesfam_km: p.distanceKm,
+    canal_contacto_preferido: canalPreferido(a.channel),
+    dia_semana: diaSemanaCL(a.dayLabel === "Mañana" ? 1 : 0),
+    bloque_horario: bloqueHorario(a.scheduledTime),
+    lead_time_days: a.leadTimeDays ?? 10,
+    especialidad: "Odontología",
+    tipo_prestacion: a.serviceType ?? tipoPrestacion(a.specialty),
+    clima_adverso: 0,
+    citas_previas_totales: total,
+    nsp_previos_totales: p.nspHistoryCount,
+    tasa_nsp_historica: total > 0 ? p.nspHistoryCount / total : 0,
+    consecutivos_nsp: p.nspConsecutive ?? 0,
+    dias_desde_ultima_cita: total > 0 ? (p.daysSinceLastVisit ?? 26) : -1,
+  };
+}
+
+async recalculateAllRisksWithModel(modelVersion?: string) {
+  if (modelVersion) this.state.mlModelVersion = modelVersion.slice(0, 60);
+
+  const conn = this.state.connectors.find((c) => c.id === "xgboost");
+  const url = process.env.XGBOOST_SERVICE_URL || conn?.endpointUrl || "";
+  try {
+    if (!/^https?:\/\//.test(url)) throw new Error("URL del servicio XGBoost no configurada");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ citas: this.state.appointments.map((a) => this.buildMlFeatures(a)) }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`Servicio ML respondió ${res.status}`);
+    const { predicciones } = (await res.json()) as {
+      predicciones: { cita_id: string; probabilidad_nsp: number; nivel_riesgo: string }[];
+    };
+    const byId = new Map(predicciones.map((p) => [p.cita_id, p]));
+
+    for (const appt of this.state.appointments) {
+      const pred = byId.get(appt.id);
+      if (!pred) continue;
+      const hasBarrier = this.state.communications.some((c) => c.patientId === appt.patientId && Boolean(c.rootCause));
+      appt.riskScore = Math.round(pred.probabilidad_nsp * 100);
+      appt.riskReasons = computeNspRiskScore(appt.patient, appt, hasBarrier).riskReasons; // motivos: fórmula actual
+    }
+    this.state.mlLastCalculatedAt = `Hoy, ${getChileTimeString()}`;
+    return { updated: predicciones.length, source: "xgboost" as const, calculatedAt: this.state.mlLastCalculatedAt };
+  } catch (err) {
+    console.error("[Kura ML] Fallback a fórmula local:", err instanceof Error ? err.message : err);
+    return { ...this.recalculateAllRisks(modelVersion), source: "heuristica" as const };
+  }
+}
   manualCheckin(
     appointmentId: string,
     source: "MANUAL_SOME_DESK" | "TOTEM_ESP32_QR" = "MANUAL_SOME_DESK",
