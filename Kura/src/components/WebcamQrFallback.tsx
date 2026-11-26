@@ -75,11 +75,16 @@ export function parseChileanIdQr(rawQrText: string): ParsedChileanId | null {
 }
 
 export function WebcamQrFallback({ onScanSuccess, onClose }: WebcamQrFallbackProps) {
-const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const onScanSuccessRef = useRef(onScanSuccess);
   const [error, setError] = useState<string | null>(null);
   const [hintMsg, setHintMsg] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+
+  useEffect(() => {
+    onScanSuccessRef.current = onScanSuccess;
+  }, [onScanSuccess]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -88,16 +93,20 @@ const videoRef = useRef<HTMLVideoElement | null>(null);
 
     async function startCamera() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
         });
 
-        if (!videoRef.current || !isMounted) return;
+        if (!isMounted || !videoRef.current) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
 
+        stream = mediaStream;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setScanning(true);
@@ -125,15 +134,17 @@ const videoRef = useRef<HTMLVideoElement | null>(null);
           if (code && code.data) {
             const parsed = parseChileanIdQr(code.data);
             if (parsed) {
-              if (intervalId) clearInterval(intervalId);
-              onScanSuccess(parsed);
+              if (intervalId) window.clearInterval(intervalId);
+              onScanSuccessRef.current(parsed);
             } else {
               setHintMsg("Se detectó un QR, pero no corresponde a una cédula chilena válida.");
             }
           }
         }, 250);
       } catch {
-        setError("No se pudo encender la cámara. Verifica los permisos del navegador.");
+        if (isMounted) {
+          setError("No se pudo encender la cámara. Verifica los permisos del navegador.");
+        }
       }
     }
 
@@ -141,10 +152,10 @@ const videoRef = useRef<HTMLVideoElement | null>(null);
 
     return () => {
       isMounted = false;
-      if (intervalId) clearInterval(intervalId);
+      if (intervalId) window.clearInterval(intervalId);
       if (stream) stream.getTracks().forEach((track) => track.stop());
     };
-  }, [onScanSuccess]);
+  }, []);
 
   return (
     <div className="rounded-xl border border-teal-200 bg-slate-50 p-4 shadow-sm">
