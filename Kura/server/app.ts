@@ -169,6 +169,32 @@ function formatWhatsAppAddress(raw: string): string {
   return `whatsapp:${normalized}`;
 }
 
+// Mapeo de números remitentes (From) asignados por Twilio Trial a cada teléfono verificado
+const TRIAL_RECIPIENT_FROM_MAP: Record<string, string> = {
+  "56950309670": "whatsapp:+17372508034",
+  "56942097153": "whatsapp:+17372212163",
+  "56949858441": "whatsapp:+17372508034", // Actualiza el +1737... si Twilio le asigna otro From
+  "56949667000": "whatsapp:+17372508034", // Actualiza el +1737... si Twilio le asigna otro From
+  "56936614544": "whatsapp:+17372508034", // Actualiza el +1737... si Twilio le asigna otro From
+};
+
+function resolveTwilioFromForRecipient(toPhone: string, defaultFrom: string): string {
+  const digitsOnly = toPhone.replace(/\D/g, "");
+  const extraMap = (process.env.TWILIO_RECIPIENT_FROM_MAP || "").trim();
+  if (extraMap) {
+    for (const pair of extraMap.split(",")) {
+      const [dest, sender] = pair.split(":").map((s) => s.trim());
+      if (dest && sender && dest.replace(/\D/g, "") === digitsOnly) {
+        return formatWhatsAppAddress(sender);
+      }
+    }
+  }
+  if (TRIAL_RECIPIENT_FROM_MAP[digitsOnly]) {
+    return TRIAL_RECIPIENT_FROM_MAP[digitsOnly];
+  }
+  return formatWhatsAppAddress(defaultFrom);
+}
+
 async function checkTwilioMessageDelivery(
   sid: string,
   basicAuth: string,
@@ -210,7 +236,7 @@ async function sendTwilioWhatsappMessage(toPhone: string, messageBody: string) {
   }
 
   const formattedTo = formatWhatsAppAddress(toPhone);
-  const formattedFrom = formatWhatsAppAddress(fromRaw);
+  const formattedFrom = resolveTwilioFromForRecipient(toPhone, fromRaw);
   const basicAuth = Buffer.from(`${sid}:${token}`).toString("base64");
   const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
 
